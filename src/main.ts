@@ -18,6 +18,7 @@ import type { PaneActions } from "./engine/PaneActions";
 import { Random } from "./engine/Random";
 import { Stage } from "./engine/Stage";
 import { DEFAULT_ENGINE_CONFIG, type EngineConfig } from "./engine/types";
+import { minClimbableY } from "./engine/Ledges";
 import { LapRunner, type LapBounds } from "./engine/laps";
 import { MOOD_TRIGGER_IDS } from "./engine/mood";
 import { effectiveScale } from "./engine/responsiveScale";
@@ -1740,7 +1741,12 @@ export default class ShimejiPlugin extends Plugin {
 	 */
 	private lapBounds(mascot: Mascot): LapBounds {
 		const viewport = mascot.getViewportSize();
-		return { left: 0, right: viewport.width, top: this.stage?.getWorldTop() ?? 0, bottom: viewport.height };
+		const worldTop = this.stage?.getWorldTop() ?? 0;
+		// Not worldTop itself: walls are trimmed so a mascot's anchor can never climb closer than
+		// this to the ceiling (see withoutLedgesTooCloseToTop), so aiming at the ceiling line set a
+		// target no climb could ever reach — the mascot went as high as the wall allowed and then
+		// sat in the top corner holding an order it could not finish.
+		return { left: 0, right: viewport.width, top: minClimbableY(worldTop, mascot.height * mascot.scale), bottom: viewport.height };
 	}
 
 	private startLaps(mascot: Mascot, laps: number): void {

@@ -96,6 +96,13 @@ const FLOOR_EDGE_MARGIN_PX = 20;
 /** Pack actions that carry out each kind of route step. `drop` is deliberately absent: falling is not
  * an action a pack performs, it is the absence of holding on — see startRouteAction. */
 const ROUTE_ACTIONS: Record<Exclude<RouteVia, "drop">, string[]> = {
+	// Dash, not Run, and not by accident: DEFAULT_ROUTE_OPTIONS costs a walk step at 8px/tick,
+	// which is precisely Dash's own speed in the bundled pack (Walk is 2, Run 4). The planner's
+	// numbers and the action that carries them out have to be the same number, and those costs
+	// decide real choices — whether to chimney or climb, whether to drop off an edge — not just
+	// how long a leg is predicted to take. Swapping this to Run alone desynchronises the two;
+	// retuning `speeds.walk` to 4 to match changes those choices and breaks three routing tests.
+	// Worth doing properly if the sprint across the floor grates, but it is a retune, not a swap.
 	walk: ["Dash", "Walk"],
 	climb: ["ClimbWall"],
 	traverse: ["ClimbCeiling"],

@@ -174,15 +174,27 @@ export function withoutWallsInUnusableEdgeStrips(ledges: Ledge[], viewportWidth:
 	});
 }
 
+/**
+ * The highest a mascot's anchor can get on a wall — the top of the climbable world.
+ *
+ * Exported because anything *aiming* somewhere near the ceiling has to agree with the filter below
+ * about where "near the ceiling" stops being reachable. Running laps aimed at the ceiling line
+ * itself and the mascot climbed as high as this, could go no further, and sat in the top corner
+ * with an order it could never complete.
+ */
+export function minClimbableY(worldTop: number, standingHeight: number): number {
+	return worldTop + Math.min(standingHeight, CEILING_APPROACH_PX);
+}
+
 export function withoutLedgesTooCloseToTop(ledges: Ledge[], worldTop: number, standingHeight: number): Ledge[] {
 	const minStandableY = worldTop + standingHeight;
-	const minClimbableY = worldTop + Math.min(standingHeight, CEILING_APPROACH_PX);
+	const climbTop = minClimbableY(worldTop, standingHeight);
 	const out: Ledge[] = [];
 	for (const ledge of ledges) {
 		if (ledge.kind === "floor") {
 			if (ledge.y >= minStandableY) out.push(ledge);
-		} else if (ledge.kind === "wall" && ledge.y1 < minClimbableY) {
-			if (ledge.y2 > minClimbableY) out.push({ ...ledge, y1: minClimbableY });
+		} else if (ledge.kind === "wall" && ledge.y1 < climbTop) {
+			if (ledge.y2 > climbTop) out.push({ ...ledge, y1: climbTop });
 		} else {
 			out.push(ledge);
 		}
