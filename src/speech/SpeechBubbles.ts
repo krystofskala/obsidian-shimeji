@@ -108,6 +108,14 @@ export class SpeechBubbles {
 		private tryRedirect: (mascot: Mascot, text: string) => boolean = () => false,
 	) {
 		this.scheduler = new SpeechScheduler(options);
+		// Loaded, not merely constructed. MarkdownRenderer.renderMarkdown attaches a
+		// MarkdownRenderChild per embed, and an embed does its actual work — resolving the file and
+		// inserting the <img> — in that child's own onload(). `addChild` only loads a child when
+		// the parent is already loaded, so a lifecycle that is never loaded leaves every embed
+		// stuck at its fallback rendering: a link showing the text after the pipe. That is why
+		// `![[chart.png|120]]` came out as the bare word "120" whatever path it was given, and why
+		// fixing the source path alone changed nothing.
+		this.rendererLifecycle.load();
 		this.layer = document.createElement("div");
 		this.layer.className = "shimeji-speech-layer";
 		document.body.appendChild(this.layer);

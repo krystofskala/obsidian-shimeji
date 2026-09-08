@@ -26,14 +26,22 @@ export class Menu {}
 export const Platform = { isMobile: false };
 
 /** Minimal but honest: real Component's full lifecycle (registerEvent/registerDomEvent/intervals)
- * is never exercised by anything this stub needs to support — only construction and unload() are,
- * since SpeechBubbles/RewriteSelectionModal construct one purely to own whatever
+ * is never exercised by anything this stub needs to support — only construction, load() and
+ * unload() are, since SpeechBubbles/RewriteSelectionModal construct one purely to own whatever
  * MarkdownRenderer.renderMarkdown attaches, unconditionally at construction time (a class field
  * initializer), not lazily behind some code path a test could choose not to reach. */
 export class Component {
 	private children: Component[] = [];
-	load(): void {}
+	/** Real Obsidian only loads a child when its parent is already loaded, and an embed does its
+	 * actual work in that child's onload — so an owner that is constructed but never loaded
+	 * silently renders every `![[embed]]` as fallback text instead. Tracked here so that mistake
+	 * is assertable rather than invisible. */
+	isLoaded = false;
+	load(): void {
+		this.isLoaded = true;
+	}
 	unload(): void {
+		this.isLoaded = false;
 		for (const child of this.children) child.unload();
 		this.children = [];
 	}

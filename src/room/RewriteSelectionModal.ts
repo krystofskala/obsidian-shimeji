@@ -42,6 +42,11 @@ export class RewriteSelectionModal extends Modal {
 		private opts: RewriteSelectionModalOptions,
 	) {
 		super(app);
+		// Loaded, not merely constructed — an embed's own MarkdownRenderChild only does its work in
+		// onload(), and addChild never loads a child whose parent isn't loaded. ChatBubble (which
+		// extends Component rather than composing one) has always called load() in its own
+		// constructor; these composed lifecycles were the ones that never did.
+		this.rendererLifecycle.load();
 	}
 
 	onOpen(): void {
