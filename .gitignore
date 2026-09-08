@@ -1,0 +1,13 @@
+node_modules/
+*.tsbuildinfo
+.vitest-cache/
+# Vault search's own cache (src/ai/VaultSearchIndex.ts) — excerpts of real note content plus
+# their embedding vectors, written into this same tracked folder. Never belongs in this dev
+# repo's history: this folder is the plugin's own source, not vault content, and unlike main.js
+# it has no reason to ever be committed.
+vault-search-index.json
+# The ONNX WASM runtime LocalEmbedder fetches from a CDN and caches here on first real use of
+# vault search (see src/ai/embeddings.ts) — a 12.9MB binary that used to be committed straight
+# into this folder and shipped with the plugin. Now purely a per-device runtime cache, same
+# category as vault-search-index.json above: never belongs in this repo's history.
+onnx-wasm/

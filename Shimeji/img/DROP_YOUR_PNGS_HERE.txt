@@ -1,0 +1,4 @@
+Put your 46 Shimeji character images directly in this folder, named shime1.png through
+shime46.png (matching the standard shimeji-ee numbering that Shimeji/conf/actions.xml
+already references). Delete this file once you've added them — it's just a placeholder so
+the empty folder survives being committed to git.

@@ -1,0 +1,1150 @@
+.shimeji-stage {
+	position: fixed;
+	inset: 0;
+	overflow: hidden;
+	pointer-events: none;
+	z-index: 60;
+}
+
+/* Mobile, reading-view-only mode: the sprites stop taking pointer input so a thumb aimed at the
+   editor gets there. Set on the container so it also covers mascots spawned while it is active. */
+.shimeji-stage.is-click-through .shimeji-mascot {
+	pointer-events: none;
+	cursor: default;
+}
+
+.shimeji-mascot {
+	position: absolute;
+	left: 0;
+	top: 0;
+	pointer-events: auto;
+	cursor: grab;
+	will-change: transform;
+	user-select: none;
+	-webkit-user-select: none;
+	/* Without this, a touch-drag can get eaten by the browser's own scroll/pan gesture
+	 * recognition before our pointermove handlers see clean, continuous events — the standard
+	 * requirement for any custom Pointer Events drag implementation on touch. */
+	touch-action: none;
+	/* Suppresses iOS Safari/WebKit's own "save image"-style callout on a long-press over the
+	 * mascot's <img> (inherited by descendants), which would otherwise compete with our own
+	 * long-press-to-context-menu below. */
+	-webkit-touch-callout: none;
+}
+
+.shimeji-mascot.is-dragging {
+	cursor: grabbing;
+}
+
+.shimeji-mascot svg {
+	display: block;
+	overflow: visible;
+}
+
+.shimeji-mascot.face-left {
+	transform: scaleX(-1);
+}
+
+.shimeji-debug-ledge {
+	position: absolute;
+	background: rgba(255, 64, 64, 0.55);
+	pointer-events: none;
+}
+
+.shimeji-cc-box {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	padding: 6px 12px;
+	margin: 8px 0 16px 0;
+}
+
+.shimeji-cc-pose {
+	padding-top: 10px;
+}
+
+.shimeji-cc-pose-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 4px;
+}
+
+.shimeji-cc-thumb {
+	max-width: 48px;
+	max-height: 48px;
+	object-fit: contain;
+	background: var(--background-secondary);
+	border-radius: 4px;
+}
+
+.shimeji-cc-error {
+	color: var(--text-error);
+	font-size: 0.85em;
+	margin-top: -8px;
+}
+
+.shimeji-cc-error:empty {
+	display: none;
+}
+
+/* AnimationOptionsModal's per-option mood toggle chips — active state only; the unpressed look is
+   Obsidian's own default button styling. */
+.shimeji-mood-chip-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.shimeji-mood-chip-active:hover {
+	background: var(--interactive-accent-hover);
+}
+
+/* RewriteSelectionModal — the editor right-click "ask the mascot" commands. Reuses the
+   .shimeji-bubble-chat-edit* classes from the room chat's own note-edit card for the proposed
+   rewrite itself (same "proposed change with Apply/Discard" shape, same look), since both already
+   work fine standalone: they're built entirely from Obsidian's own theme variables, with no
+   dependency on a specific ancestor class the way the chat bubble's comic-mode overrides need one.
+   Only the "what was selected" preview above the proposal needs anything new here. */
+.shimeji-rewrite-modal {
+	min-width: 420px;
+}
+
+.shimeji-rewrite-original {
+	margin-bottom: 12px;
+	padding: 8px 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+	max-height: 160px;
+	overflow-y: auto;
+}
+
+.shimeji-rewrite-label {
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.02em;
+	color: var(--text-muted);
+	margin-bottom: 4px;
+}
+
+/* Plain textContent, not markdown — the original selection is shown verbatim for comparison, not
+   re-rendered, so its own line breaks need pre-wrap or a multi-line selection reads as one run-on
+   paragraph. */
+.shimeji-rewrite-original p {
+	margin: 0;
+	color: var(--text-muted);
+	font-size: 13px;
+	white-space: pre-wrap;
+}
+
+.shimeji-wizard-modal {
+	width: 640px;
+	max-width: 90vw;
+}
+
+/* Marks a checklist row's button once that pose already has an image — a quieter colour than the
+   default CTA-ish button styling, so a glance down the list shows what's left rather than what's
+   done. Doesn't rely on colour alone: the button's own text already switches "Fit an image" ->
+   "Refit". */
+.shimeji-cc-done {
+	color: var(--text-success);
+}
+
+/* ---- the room ---------------------------------------------------------- */
+
+/* The room is centred in its pane on both axes — it is a finished picture with its own surround,
+   not a room whose walls continue up out of frame. The surround colour is sampled from the artwork
+   itself (see RoomView), so the pane and the picture meet without a seam.
+
+   Placement here must agree with RoomGeometry.layoutRoom, which computes the same centring for the
+   collision surfaces. The stylesheet centres the canvas; the geometry centres the ledges; they are
+   the same sum, and if this changes that one must too. */
+.shimeji-room-pane {
+	position: relative;
+	padding: 0;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+}
+
+.shimeji-room-stack {
+	display: flex;
+	justify-content: center;
+}
+
+.shimeji-room-canvas {
+	image-rendering: pixelated;
+	image-rendering: crisp-edges;
+	display: block;
+}
+
+/* RoomOcclusion's overlay: the sliver of the room's own canvas that belongs in front of whoever
+   lives there, cropped back out and redrawn over the resident. One above the stage overlay (60),
+   below the speech layer (62) — a bubble should never be cut off by a desk. */
+.shimeji-room-occlusion {
+	position: fixed;
+	pointer-events: none;
+	z-index: 61;
+	image-rendering: pixelated;
+	image-rendering: crisp-edges;
+}
+
+/* Shown only when the chosen room expects a picture and has not got one. Falling back to the
+   painted room silently is what makes a missing file look like the feature simply working
+   differently than expected — nothing otherwise says a file was wanted, or where it goes. */
+.shimeji-room-missing {
+	padding: 0.75rem 0.9rem;
+	margin: 0.5rem;
+	border-radius: 6px;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	line-height: 1.5;
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+	overflow-wrap: anywhere;
+}
+
+.shimeji-room-missing-title {
+	color: var(--text-normal);
+	font-weight: var(--font-semibold);
+}
+
+.shimeji-room-missing code {
+	font-size: var(--font-ui-smaller);
+	user-select: all;
+}
+
+.shimeji-room-missing-note {
+	font-size: calc(var(--font-ui-smaller) * 0.92);
+}
+
+/* ---------- sprite sheet editor ---------- */
+
+.shimeji-sheet-modal {
+	width: 1040px;
+	max-width: 95vw;
+}
+
+.shimeji-sheet-layout {
+	display: flex;
+	gap: 16px;
+	align-items: flex-start;
+	flex-wrap: wrap;
+}
+
+.shimeji-sheet-canvas-col {
+	flex: 1 1 420px;
+	min-width: 0;
+}
+
+.shimeji-sheet-side-col {
+	flex: 0 1 320px;
+	min-width: 260px;
+}
+
+.shimeji-sheet-side-col h4 {
+	margin: 16px 0 4px 0;
+}
+
+/* The sheet can be far larger than the modal, and magnified up to 24x on top of that, so it
+   scrolls inside its own box rather than stretching the dialog off the screen. */
+.shimeji-slicer {
+	max-height: 520px;
+	overflow: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background: var(--background-secondary);
+}
+
+.shimeji-slicer canvas {
+	display: block;
+	/* Nearest-neighbour, so a magnified pixel-art sheet shows its real pixels instead of a blur. */
+	image-rendering: pixelated;
+	cursor: crosshair;
+}
+
+.shimeji-slicer-placeholder {
+	padding: 24px 12px;
+	text-align: center;
+	color: var(--text-muted);
+	font-size: 0.9em;
+}
+
+/* The character wizard's per-pose fit editor — a fixed 128x128 frame, upscaled, so it never
+   resizes as the user zooms; only what's drawn inside it changes. */
+.shimeji-posefit {
+	display: inline-block;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	overflow: hidden;
+}
+
+.shimeji-posefit canvas {
+	display: block;
+	image-rendering: pixelated;
+}
+
+.shimeji-sheet-controls {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	gap: 8px;
+	margin: 6px 0;
+}
+
+/* The per-frame finetune stepper (PoseSequenceFitModal) — unlike .shimeji-posefit, each frame can
+   be a different size (native to the sprite it was sliced from, never forced into the fixed 128x128
+   pose frame), so this has no fixed dimensions of its own; the canvas element itself is sized in JS
+   to whatever the current frame's own scale works out to. */
+.shimeji-poseseq {
+	display: inline-block;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	overflow: hidden;
+}
+
+.shimeji-poseseq canvas {
+	display: block;
+	image-rendering: pixelated;
+	cursor: crosshair;
+	touch-action: none;
+}
+
+.shimeji-sheet-field {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.shimeji-sheet-field label {
+	font-size: 0.8em;
+	color: var(--text-muted);
+}
+
+.shimeji-sheet-field input[type="number"] {
+	width: 84px;
+}
+
+.shimeji-bg-preview {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background: var(--background-secondary);
+	overflow: auto;
+	max-height: 520px;
+	cursor: crosshair;
+}
+
+.shimeji-color-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin: 4px 0;
+}
+
+.shimeji-color-chip {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	padding: 2px 6px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 999px;
+	font-size: 0.78em;
+	font-variant-numeric: tabular-nums;
+}
+
+.shimeji-color-swatch {
+	width: 13px;
+	height: 13px;
+	border-radius: 3px;
+	border: 1px solid var(--background-modifier-border);
+}
+
+.shimeji-color-remove {
+	padding: 0 4px;
+	line-height: 1;
+	background: none;
+	border: none;
+	box-shadow: none;
+	cursor: pointer;
+	color: var(--text-muted);
+}
+
+/* A real <label> wrapping a hidden <input type="file">: Electron will not open a file dialog from
+   a scripted .click(), so the input has to be genuinely present and genuinely clicked. Hidden by
+   clipping rather than display:none, which would take it out of the accessibility tree. */
+.shimeji-upload-label {
+	display: inline-block;
+	cursor: pointer;
+}
+
+.shimeji-upload-input {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+/* ---------- speech bubbles ---------- */
+
+/* Its own fixed layer, above the mascot overlay (60), so a speech line stays readable no matter
+   what the mascot is standing near. Never interactive — a bubble that swallowed a click would
+   break dragging the mascot underneath it. */
+.shimeji-speech-layer {
+	position: fixed;
+	inset: 0;
+	z-index: 62;
+	pointer-events: none;
+}
+
+.shimeji-bubble {
+	position: fixed;
+	/* 170px is the width shimeji-buddy used, and it is the right one: a bubble much wider than the
+	   sprite stops reading as coming from the sprite. */
+	max-width: 170px;
+	width: max-content;
+	padding: 6px 10px;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+	box-shadow: var(--shadow-s, 0 1px 3px rgba(0, 0, 0, 0.15));
+	font-size: 12px;
+	line-height: 1.3;
+	text-align: center;
+	/* Fades in where it appears rather than sliding, so a bubble on a mascot that is already
+	   moving does not read as a second thing flying across the screen. */
+	animation: shimeji-bubble-in 140ms ease-out;
+}
+
+/* An ordinary speech line rendered as markdown (see SpeechBubbles.show) can embed an image —
+   ![[pic.png|300]] — with a width the note author chose for a full-page context, not this 170px
+   box. Scaled down to actually fit rather than overflowing/clipping; never scaled *up* past
+   whatever the embed itself asked for. */
+.shimeji-bubble img {
+	max-width: 100%;
+	height: auto;
+	display: block;
+}
+
+/* MarkdownRenderer wraps even a single plain line in a <p>, which carries browser-default
+   top/bottom margins a setText() call never had — trimmed so an ordinary one-line remark still
+   sits centred in the bubble with no extra whitespace above or below it. */
+.shimeji-bubble p:first-child {
+	margin-top: 0;
+}
+
+.shimeji-bubble p:last-child {
+	margin-bottom: 0;
+}
+
+.shimeji-bubble::after {
+	content: "";
+	position: absolute;
+	left: 50%;
+	bottom: -6px;
+	width: 10px;
+	height: 10px;
+	margin-left: -5px;
+	background: var(--background-primary);
+	border-right: 1px solid var(--background-modifier-border);
+	border-bottom: 1px solid var(--background-modifier-border);
+	transform: rotate(45deg);
+}
+
+/* A fixed white-and-ink look that deliberately ignores the active theme, so it reads the same in
+   light or dark — the point of the style is that it looks like a comic panel, not like the app.
+   The font stack is a cross-platform stand-in for one actual font, not a preference-ordered list
+   of different looks: "Comic Sans MS" (bundled on Windows and modern macOS) is the real thing;
+   "Comic Neue" is the open-licensed lookalike some Linux setups carry; "Chalkboard SE" and
+   "Bradley Hand" are Apple's own bundled playful/handwritten system fonts, there specifically for
+   iOS/iPadOS, which has none of the above — without them this used to fall all the way through to
+   the bare `cursive` generic, which different mobile browsers resolve to wildly different (and
+   often joined-script, not comic-print) fonts, reading as a jarring mismatch against desktop
+   rather than the same character speaking. `sans-serif` is the final, guaranteed-present fallback
+   for a platform (stock Android chief among them) with none of the named fonts either — plain and
+   unremarkable beats an unpredictable cursive script that might clash with this look entirely. */
+.shimeji-bubble.shimeji-bubble-comic {
+	background: #ffffff;
+	color: #111111;
+	border: 2.5px solid #111111;
+	border-radius: 16px 18px 20px 14px / 12px 16px 14px 18px;
+	box-shadow: 2px 3px 0 rgba(17, 17, 17, 0.9);
+	font-family: "Comic Sans MS", "Comic Neue", "Chalkboard SE", "Segoe Print", "Bradley Hand", sans-serif;
+	font-weight: 700;
+	padding: 7px 12px;
+}
+
+.shimeji-bubble.shimeji-bubble-comic::after {
+	background: #ffffff;
+	border-right: 2.5px solid #111111;
+	border-bottom: 2.5px solid #111111;
+	width: 12px;
+	height: 12px;
+	margin-left: -6px;
+	bottom: -7px;
+}
+
+/* Selecting text inside any bubble (an ambient remark, or the chat transcript below) otherwise
+   falls back to the browser's own default selection colour rather than Obsidian's — nothing about
+   this floating layer sits inside a container Obsidian's own app.css happens to theme selection
+   for. `::selection` cascades to plain descendant text with no rule of its own, so this one
+   declaration covers every message row inside .shimeji-bubble-chat-messages too, keeping the
+   chat's own input field (styled to match, see .shimeji-room-chat-inputbar-field::selection) and
+   its transcript showing the same highlight colour rather than two different ones side by side.
+   Comic mode gets the same fixed colour its own version of that input rule already uses, for the
+   same "ignores the active theme everywhere in this look" reason. */
+.shimeji-bubble::selection {
+	background: var(--text-selection);
+}
+
+.shimeji-bubble.shimeji-bubble-comic::selection {
+	background: rgba(17, 17, 17, 0.25);
+}
+
+@keyframes shimeji-bubble-in {
+	from { opacity: 0; transform: translateY(3px); }
+	to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.shimeji-bubble { animation: none; }
+}
+
+/* ---------- chat bubble (an ordinary bubble, expanded) ---------- */
+
+/* The button RoomView offers to open/close the resident's chat. Sits in the room pane itself
+   (not the speech layer — it's a real click target tied to this pane, not something drawn over
+   the mascot), styled as a quiet corner control rather than a call-to-action. */
+.shimeji-room-chat-toggle {
+	position: absolute;
+	top: 6px;
+	right: 8px;
+	z-index: 5;
+	font-size: var(--font-ui-smaller);
+	padding: 2px 10px;
+}
+
+.shimeji-room-chat-toggle.is-active {
+	color: var(--text-on-accent);
+	background: var(--interactive-accent);
+}
+
+/* Same element as .shimeji-bubble (ChatBubble builds into SpeechBubbles' own layer, keeps the
+   theme/comic modifier and its rounded corners) — the transcript, docked directly above the room
+   picture, sized to match its height rather than however much dead space the pane happens to leave
+   above it. Width/position/height are all set inline, per frame, by ChatBubble.update(); this only
+   needs to stop the ordinary bubble's line-width cap from clamping the width down, and turn the
+   bubble into a scrollable message list (no separate header — the room pane's own
+   .shimeji-room-chat-toggle button is the only open/close control).
+   The tail is NOT this element's own ::after (see .shimeji-bubble-chat-tail below for why) — it
+   used to be, and overflow:auto below on the scrolling child mattered for that decision too. It is
+   now a real child element instead, absolutely positioned to hang off this element's own bottom
+   border (see its own comment) — which is exactly why this element must stay overflow:visible: a
+   child positioned outside its parent's own box is clipped away the moment the parent clips
+   anything at all, the same rule that ate the tail back when it was this element's own ::after. */
+.shimeji-bubble-chat {
+	max-width: none;
+	width: 320px;
+	display: flex;
+	flex-direction: column;
+	text-align: left;
+	/* The fade-in reads fine for a one-line remark; on a panel this size it would look like the
+	   whole chat window sliding in every time a resident is reopened. */
+	animation: none;
+}
+
+/* This element still carries the plain .shimeji-bubble class too (for the theme/comic background,
+   border and corner radius), and that base class's own ::after is a real tail of its own — the one
+   an ordinary one-line remark actually uses. Left alone here, both tails would render at once: the
+   inherited one notched into this element's own bottom border, and .shimeji-bubble-chat-tail's own
+   child element correctly hanging off the same border below it. Only the second one is wanted. */
+.shimeji-bubble-chat::after {
+	content: none;
+}
+
+/* The actual scrolling message list — split out from .shimeji-bubble-chat itself specifically so
+   that element can stay overflow:visible for its own tail (below) while this one clips the
+   messages that scroll past its edges. min-height:0 is load-bearing: a flex child defaults to
+   min-height:auto, which lets it grow past its flex-basis and ignore overflow-y entirely — without
+   it this never actually scrolls, it just keeps growing. */
+.shimeji-bubble-chat-messages {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	/* More headroom above the first line than the sides/bottom get — flush against the rounded top
+	   corner otherwise reads as cramped in a way the other three edges don't. */
+	padding: 18px 10px 8px;
+	/* Nothing else in this file blocks selection here, but nothing explicitly enabled it either —
+	   .shimeji-mascot's own `user-select: none` (a real, deliberate rule, elsewhere in this file)
+	   is a plausible enough source of confusion that this is worth being unambiguous about: chat
+	   text, unlike the sprite itself, is meant to be selectable and copyable. */
+	user-select: text;
+	cursor: text;
+}
+
+/* The tail: a plain CSS border-triangle, not a rotated square like .shimeji-bubble's own ::after —
+   deliberately, so its footprint is its own literal width/height with no diagonal to account for.
+   (A square rotated 45deg has a *visual* extent of `side * sqrt(2)`, not `side` — the gap this used
+   to float in was sized assuming the wrong one of those twice before this became a real element.)
+   Now a real DOM *child* of the transcript (ChatBubble.build() appends it there, after the messages
+   list) rather than an independent sibling positioned by hand every frame in JS — position:absolute
+   against the transcript's own position:fixed box (see .shimeji-bubble) means `bottom: -10px` always
+   means "hanging exactly off my parent's own bottom border", automatically, on every resize, with no
+   per-frame math and no way for the two to visually drift apart or double up. This is also what
+   finally closes the gap for good: the transcript sits ChatBubble.ts's TAIL_HEIGHT above the room
+   picture and nothing more, so this element's own height *is* that space, edge to edge, rather than
+   floating somewhere inside a wider one with dead air on both sides. Colour matches the transcript's
+   own background per style, so it reads as one continuous shape rather than two touching ones. */
+.shimeji-bubble-chat-tail {
+	position: absolute;
+	left: 50%;
+	bottom: -10px;
+	margin-left: -8px;
+	width: 0;
+	height: 0;
+	border-left: 8px solid transparent;
+	border-right: 8px solid transparent;
+	border-top: 10px solid var(--background-primary);
+	pointer-events: none;
+}
+
+.shimeji-bubble-chat-tail.shimeji-bubble-comic {
+	border-top-color: #ffffff;
+	filter: drop-shadow(0 1.5px 0 #111111);
+}
+
+/* Free-flowing markdown text (MarkdownRenderer.renderMarkdown, not a plain textContent line), not
+   its own little coloured box — a user's own turns pick themselves out by alignment and colour
+   instead, the same cue a plain-text messaging view uses without needing bubble outlines to do it.
+   Obsidian's rendered markdown brings its own paragraph margins meant for a full note; zeroed here
+   so a short chat line doesn't read as a mostly-empty document. */
+.shimeji-bubble-chat-msg {
+	font-size: 12px;
+	line-height: 1.4;
+}
+
+.shimeji-bubble-chat-msg :is(p, ul, ol, h1, h2, h3, h4, h5, h6) {
+	margin: 0;
+}
+
+.shimeji-bubble-chat-msg-user {
+	text-align: right;
+	color: var(--text-muted);
+}
+
+.shimeji-bubble-chat-msg-assistant {
+	text-align: left;
+	color: var(--text-normal);
+}
+
+/* A mascot's own ambient/vault-reaction line, redirected here instead of a floating bubble while
+   this chat is open (see SpeechBubbles' tryRedirect and ChatBubble.addScriptedLine) — coloured on
+   its own so it reads as "the mascot said this on its own", not a reply from the model. */
+.shimeji-bubble-chat-msg-scripted {
+	text-align: left;
+	color: var(--text-error);
+}
+
+/* Comic mode's bubble background is fixed white regardless of theme (see .shimeji-bubble-comic
+   above) — the theme-relative colours the rules above use are made for --background-primary,
+   which in a dark theme is a colour close to this fixed white's opposite, so those roles washed out
+   to a similar low-contrast light grey against it. Comic mode gets its own fixed set instead, the
+   same "ignores the active theme on purpose" reasoning the bubble background itself already uses. */
+.shimeji-bubble-chat.shimeji-bubble-comic .shimeji-bubble-chat-msg-assistant {
+	color: #111111;
+}
+
+.shimeji-bubble-chat.shimeji-bubble-comic .shimeji-bubble-chat-msg-user {
+	color: #555555;
+}
+
+.shimeji-bubble-chat.shimeji-bubble-comic .shimeji-bubble-chat-msg-scripted {
+	color: #b91c1c;
+}
+
+.shimeji-bubble-chat-thinking {
+	opacity: 0.6;
+}
+
+/* A user turn's own attached image (see ChatBubble.send/handlePaste) — capped well under the
+   320px-wide transcript so a full-resolution screenshot reads as a thumbnail, not a wall. Right-
+   aligned like the rest of a user turn (see .shimeji-bubble-chat-msg-user above). */
+.shimeji-bubble-chat-msg-image {
+	display: block;
+	max-width: 160px;
+	max-height: 160px;
+	border-radius: 6px;
+	margin: 4px 0 0 auto;
+}
+
+/* The row of pasted-image chips in the input bar (see ChatBubble.updatePendingImagePreview) — an
+   ordinary flex sibling of the field/button either side of it (.shimeji-room-chat-inputbar is
+   already display:flex), each chip sized to the bar's own fixed height so it never changes the
+   bar's total size. No `display: none` here, deliberately: ChatBubble toggles this element purely
+   from JS (el.style.display = "none"/""), the same convention every other show/hide in this
+   codebase uses (RoomOcclusion's overlay, Mascot's own img/svg swap) — that only works when the
+   class itself declares the *visible* resting state, since clearing an inline style falls back to
+   whatever the class says, not to "hidden". Baking `display: none` in here instead used to make
+   the "" branch a no-op: the row would never actually reveal itself once an image was pasted. */
+.shimeji-room-chat-pending-image {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex: 0 0 auto;
+	height: 100%;
+}
+
+.shimeji-room-chat-pending-image-chip {
+	position: relative;
+	height: 100%;
+	aspect-ratio: 1;
+}
+
+.shimeji-room-chat-pending-image-chip img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	border-radius: 4px;
+}
+
+.shimeji-room-chat-pending-image-chip button {
+	position: absolute;
+	top: -6px;
+	right: -6px;
+	width: 16px;
+	height: 16px;
+	min-width: 0;
+	padding: 0;
+	line-height: 1;
+	font-size: 11px;
+	border-radius: 50%;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	color: var(--text-normal);
+}
+
+.shimeji-bubble-chat-notice {
+	font-size: 11px;
+	color: var(--text-error);
+	padding: 4px 2px 0 2px;
+}
+
+/* A proposed note edit ("Phase 5" — see ai/noteEdits.ts, ChatBubble.renderEditCard) rendered as
+   its own small card under the assistant message that proposed it, not folded into the message
+   text itself: it needs to read as "a pending action with controls", not more prose. Sized to
+   match the transcript's own compact scale (.shimeji-bubble-chat-msg's 12px/1.4) rather than a
+   full note-editing UI — this is still a small chat bubble, not a settings panel. */
+.shimeji-bubble-chat-edit {
+	margin: 2px 0 6px;
+	padding: 6px 8px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+}
+
+.shimeji-bubble-chat-edit-label {
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.02em;
+	color: var(--text-muted);
+	margin-bottom: 3px;
+}
+
+.shimeji-bubble-chat-edit-preview {
+	font-size: 12px;
+	line-height: 1.4;
+	color: var(--text-normal);
+}
+
+.shimeji-bubble-chat-edit-preview :is(p, ul, ol, h1, h2, h3, h4, h5, h6) {
+	margin: 0;
+}
+
+.shimeji-bubble-chat-edit-status {
+	font-size: 11px;
+	color: var(--text-muted);
+	margin-top: 4px;
+}
+
+.shimeji-bubble-chat-edit-actions {
+	display: flex;
+	gap: 6px;
+	margin-top: 6px;
+}
+
+/* Repeated per pseudo-class and qualified with the actions row's own class, not left as a single
+   class on the buttons themselves — the exact same trap the input bar's field/send button hit
+   above: Obsidian's bare `button:hover`/`:focus`/`:active` rules (element + pseudo-class) outrank
+   a single plain class (see that block's own comment for the specificity arithmetic), so a plain
+   `.shimeji-bubble-chat-edit-apply` would lose its own background the instant it's interacted
+   with even though it wins while idle. Two classes here beats that outright without needing
+   !important — cheaper than the input bar's fix, and worth doing up front rather than waiting for
+   the same bug to get reported a second time. */
+.shimeji-bubble-chat-edit-actions .shimeji-bubble-chat-edit-apply,
+.shimeji-bubble-chat-edit-actions .shimeji-bubble-chat-edit-apply:hover,
+.shimeji-bubble-chat-edit-actions .shimeji-bubble-chat-edit-apply:focus,
+.shimeji-bubble-chat-edit-actions .shimeji-bubble-chat-edit-apply:focus-visible,
+.shimeji-bubble-chat-edit-actions .shimeji-bubble-chat-edit-apply:active {
+	flex: 0 0 auto;
+	font-size: 11px;
+	padding: 3px 10px;
+	border-radius: 999px;
+	cursor: pointer;
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border: none;
+	box-shadow: none;
+	outline: none;
+}
+
+.shimeji-bubble-chat-edit-actions .shimeji-bubble-chat-edit-discard,
+.shimeji-bubble-chat-edit-actions .shimeji-bubble-chat-edit-discard:hover,
+.shimeji-bubble-chat-edit-actions .shimeji-bubble-chat-edit-discard:focus,
+.shimeji-bubble-chat-edit-actions .shimeji-bubble-chat-edit-discard:focus-visible,
+.shimeji-bubble-chat-edit-actions .shimeji-bubble-chat-edit-discard:active {
+	flex: 0 0 auto;
+	font-size: 11px;
+	padding: 3px 10px;
+	border-radius: 999px;
+	cursor: pointer;
+	background: transparent;
+	color: var(--text-muted);
+	border: 1px solid var(--background-modifier-border);
+	box-shadow: none;
+	outline: none;
+}
+
+.shimeji-bubble-chat-edit-apply:disabled,
+.shimeji-bubble-chat-edit-discard:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+/* Comic mode's fixed white-background/ink-outline look (see .shimeji-bubble-comic) — the
+   theme-relative colours above would wash out against a background that ignores the active theme
+   on purpose, same reasoning as .shimeji-bubble-chat-msg-assistant's own comic override. */
+.shimeji-bubble-chat.shimeji-bubble-comic .shimeji-bubble-chat-edit {
+	border-color: #111111;
+	background: rgba(17, 17, 17, 0.05);
+}
+
+.shimeji-bubble-chat.shimeji-bubble-comic .shimeji-bubble-chat-edit-label,
+.shimeji-bubble-chat.shimeji-bubble-comic .shimeji-bubble-chat-edit-status {
+	color: #555555;
+}
+
+.shimeji-bubble-chat.shimeji-bubble-comic .shimeji-bubble-chat-edit-preview {
+	color: #111111;
+}
+
+.shimeji-bubble-chat.shimeji-bubble-comic .shimeji-bubble-chat-edit-actions .shimeji-bubble-chat-edit-apply {
+	background: #111111;
+	color: #ffffff;
+}
+
+.shimeji-bubble-chat.shimeji-bubble-comic .shimeji-bubble-chat-edit-actions .shimeji-bubble-chat-edit-discard {
+	color: #111111;
+	border-color: #111111;
+}
+
+/* The thin bar docked directly below the room picture — "and under that a thin input field".
+   Carries the same .shimeji-bubble/.shimeji-bubble-comic classes as the transcript above it (see
+   ChatBubble.build()), so the whole chat surface reads as one object instead of a themed bubble
+   with a plain Obsidian form control dropped underneath it. The overrides below undo the parts
+   of that base class tuned for a small, one-line speech bubble rather than a full-width bar. */
+.shimeji-room-chat-inputbar {
+	position: fixed;
+	display: flex;
+	align-items: stretch;
+	gap: 6px;
+	box-sizing: border-box;
+	max-width: none;
+	padding: 4px 6px;
+	/* The transcript disables this for the same reason (see .shimeji-bubble-chat) — both appear
+	   together on open, and only one of the two fading in would look inconsistent. */
+	animation: none;
+}
+
+/* The bubble's own ::after is its speech-pointing tail — wanted on the transcript above (where
+   .shimeji-bubble-chat-tail is a separate child instead, see that rule's own comment) but not
+   here: the input bar is the last element in the stack, with nothing below it to point at. Needs
+   to match (or exceed) the comic variant's own specificity below to actually win over it. */
+.shimeji-room-chat-inputbar::after,
+.shimeji-room-chat-inputbar.shimeji-bubble-comic::after {
+	content: none;
+}
+
+/* Transparent rather than Obsidian's own field background, so the bar reads as one bubble-
+   coloured control instead of a separate grey box floating inside a coloured frame. Qualified with
+   the bar's own class rather than left as a single class on the field alone: Obsidian's base
+   stylesheet styles `input[type="text"]` directly, an element+attribute selector that outranks one
+   plain class on specificity regardless of source order, so the unqualified version of this rule
+   loses that fight and Obsidian's own dark field background shows through inside the bubble.
+   box-sizing/height fix the other half of the same "Obsidian's own default chrome wins" problem:
+   its default input/button padding is sized assuming content-box, which can make the field and
+   button taller than this bar's own JS-set height (ChatBubble.update's inputHeight) and poke out
+   past its rounded bottom edge instead of sitting centred inside it. */
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-field {
+	flex: 1 1 auto;
+	min-width: 0;
+	height: 100%;
+	box-sizing: border-box;
+	font-size: 12px;
+	color: inherit;
+	padding: 0 4px;
+}
+
+/* background/border/box-shadow are repeated per pseudo-class rather than left on the plain
+   selector above, because each of :hover/:focus/:active adds to a selector's own specificity —
+   Obsidian's own `input[type="text"]:hover`/`:focus`/`:active` rules can outrank an otherwise-
+   winning plain-state override the instant the field is actually interacted with, even though the
+   plain rule beats Obsidian's own plain `input[type="text"]` rule just fine while idle. This was
+   found and re-found one interaction at a time (idle, then focus, then hover) — listing every state
+   in one place instead of the single state that happened to get reported closes the rest before
+   they get found the same way.
+
+   color-scheme/appearance are a *different* mechanism from all of the above, found only once a
+   user's own DevTools confirmed `background-color` was already computing as transparent here —
+   despite that, the field kept painting a solid dark fill. `body.theme-dark` sets `color-scheme:
+   dark` (confirmed directly in that same user's Styles panel), an inherited property nothing here
+   ever overrode; Chromium uses it to pick native form-control rendering *independently* of
+   `background-color`, so a dark host theme still painted a native dark canvas underneath this
+   bubble's own deliberately light/theme-following look. `color-scheme: light` stops that; `appearance:
+   none` additionally opts the whole control out of native chrome so author CSS is what's actually
+   painted.
+
+   :focus-visible is listed separately from :focus, not folded into the same "it's just another
+   state" bucket — found only by comparing a real click-focus against DevTools' own :focus-forcing
+   checkbox, which left this rule looking like it was already winning right up until that
+   comparison. A real click on a text input satisfies *both* :focus and :focus-visible at once, so
+   Obsidian's own :focus-visible rule (wherever exactly it lives) was painting its dark fill
+   unopposed the entire time — this file's own :focus coverage never mattered there, because
+   cascade resolution is per matched *selector*, not per pseudo-class a click happens to satisfy;
+   DevTools' checkbox forces only the one state it's told to, so it never reproduced this.
+
+   Even after adding :focus-visible here, a real click still confirmed `rgb(46, 46, 46)` — with
+   `field.matches(':focus-visible')` independently confirmed true, so the pseudo-class genuinely
+   matched and this rule still lost outright. Obsidian's own :focus-visible rule must therefore be
+   qualified with something beyond a bare `input[type="text"]:focus-visible` (an ancestor class
+   like `body.theme-dark`, going by everything else already traced back to that class) — enough
+   extra specificity to beat two chained classes plus a pseudo-class regardless. Rather than keep
+   adding one more qualifier and re-testing against a moving target, every property below is
+   !important: the one guarantee that survives any future Obsidian selector this specific, without
+   this file needing to know what it actually is. */
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-field,
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-field:hover,
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-field:focus,
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-field:focus-visible,
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-field:active {
+	background: transparent !important;
+	border: none !important;
+	border-radius: 0 !important;
+	box-shadow: none !important;
+	appearance: none !important;
+	-webkit-appearance: none !important;
+	color-scheme: light !important;
+	/* `color: inherit` above makes the caret's own default (currentColor) whatever text color this
+	   bubble happens to be using, which at 12px/1 line can read as barely there. A solid accent
+	   color makes it unmistakable regardless of theme, the same reason Obsidian uses it for every
+	   other "this is interactive, look here" control (buttons, checkboxes, sliders). Comic mode
+	   deliberately isn't given this override — its own fixed near-black text (see below) already
+	   has plenty of contrast against comic mode's fixed white, and an accent-coloured caret would
+	   be one un-ink-like color breaking an otherwise strictly black-and-white comic-panel look. */
+	caret-color: var(--interactive-accent) !important;
+}
+
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-field:focus,
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-field:focus-visible {
+	outline: none !important;
+}
+
+/* Selected text otherwise picks up Chromium's default grey selection block, which read wrong
+   against this bubble's own white/black look — but fully transparent (an earlier version of this
+   rule) turned out to be a real usability problem, not just an aesthetic one: with no highlight at
+   all, selecting text to cut/copy left no way to see which characters were actually selected.
+   Obsidian's own --text-selection variable keeps this consistent with the rest of the app in
+   theme mode; comic mode gets its own fixed colour below, matching how it already ignores the
+   active theme everywhere else in this bar. */
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-field::selection {
+	background: var(--text-selection) !important;
+}
+
+/* Same repeat-per-pseudo-class treatment as the field above, and the same reason: Obsidian's own
+   `button:hover`/`:focus`/`:active` rules outrank a plain `.shimeji-room-chat-inputbar-send`
+   class the instant the button is actually interacted with, even though the plain rule beats
+   Obsidian's own bare `button` rule just fine while idle — the field's fix only ever covered the
+   field itself, so the button was still showing Obsidian's default grey hover/focus fill despite
+   sitting inside the same bubble-coloured oval. */
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-send,
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-send:hover,
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-send:focus,
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-send:focus-visible,
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-send:active {
+	flex: 0 0 auto;
+	height: 100%;
+	box-sizing: border-box;
+	font-size: 12px;
+	padding: 0 10px;
+	background: transparent !important;
+	/* color/border/border-radius are deliberately *not* !important: comic mode's own rule below
+	   sets all three to a real bordered-pill look, at equal specificity but later in the file, and
+	   needs to keep winning there via ordinary cascade order — !important here would flatten that
+	   distinction and always show the plain look even in comic mode. */
+	color: inherit;
+	border: none;
+	border-radius: 0;
+	appearance: none !important;
+	-webkit-appearance: none !important;
+	color-scheme: light !important;
+	box-shadow: none !important;
+}
+
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-send:focus,
+.shimeji-room-chat-inputbar .shimeji-room-chat-inputbar-send:focus-visible {
+	outline: none !important;
+}
+
+/* Comic mode ignores the active theme the same way the bubble itself does (see
+   .shimeji-bubble-comic above) — an ordinary Obsidian-styled field/button sitting right under a
+   white, ink-outlined, Comic-Sans transcript would clash rather than read as the same object. */
+.shimeji-room-chat-inputbar.shimeji-bubble-comic .shimeji-room-chat-inputbar-field {
+	font-family: "Comic Sans MS", "Comic Neue", "Chalkboard SE", "Segoe Print", "Bradley Hand", sans-serif;
+	color: #111111;
+}
+
+.shimeji-room-chat-inputbar.shimeji-bubble-comic .shimeji-room-chat-inputbar-field::placeholder {
+	color: #111111;
+	opacity: 0.55;
+}
+
+/* var(--text-selection) above is the right default for theme mode, but comic mode ignores the
+   active theme everywhere else in this bar — that variable could plausibly resolve to something
+   that reads poorly against comic mode's own fixed white background, so it gets the same fixed
+   treatment as its color/border/placeholder above rather than inheriting a theme-dependent value. */
+.shimeji-room-chat-inputbar.shimeji-bubble-comic .shimeji-room-chat-inputbar-field::selection {
+	background: rgba(17, 17, 17, 0.25) !important;
+}
+
+.shimeji-room-chat-inputbar.shimeji-bubble-comic .shimeji-room-chat-inputbar-send {
+	font-family: "Comic Sans MS", "Comic Neue", "Chalkboard SE", "Segoe Print", "Bradley Hand", sans-serif;
+	font-weight: 700;
+	background: transparent;
+	color: #111111;
+	border: 2px solid #111111;
+	border-radius: 10px;
+}
+
+/* ---------- settings sections ---------- */
+
+.shimeji-section {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	margin: 8px 0;
+	background: var(--background-primary);
+}
+
+/* A nested sub-group sits on a different ground from its parent, so depth stays readable without
+   having to indent everything into a narrower and narrower column. */
+.shimeji-section .shimeji-section {
+	background: var(--background-secondary);
+	margin: 6px 0;
+}
+
+.shimeji-section-title {
+	cursor: pointer;
+	padding: 8px 12px;
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+	list-style: none;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	border-radius: 6px;
+	user-select: none;
+}
+
+.shimeji-section-title:hover {
+	background: var(--background-modifier-hover);
+}
+
+.shimeji-section-title:focus-visible {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: -2px;
+}
+
+/* The default marker is a filled triangle that sits oddly against Obsidian's own chrome; this is
+   a rotating chevron drawn from a border, matching how Obsidian marks its own foldable headings. */
+.shimeji-section-title::-webkit-details-marker {
+	display: none;
+}
+
+.shimeji-section-title::before {
+	content: "";
+	width: 6px;
+	height: 6px;
+	border-right: 2px solid var(--text-muted);
+	border-bottom: 2px solid var(--text-muted);
+	transform: rotate(-45deg);
+	transition: transform 120ms ease;
+	flex: none;
+	margin-left: 2px;
+}
+
+.shimeji-section[open] > .shimeji-section-title::before {
+	transform: rotate(45deg);
+}
+
+.shimeji-section-body {
+	padding: 0 12px 8px;
+}
+
+/* Obsidian's own setting rows carry a top border, which doubles up against the section edge on
+   the first row of a group. */
+.shimeji-section-body > .setting-item:first-child {
+	border-top: none;
+	padding-top: 4px;
+}
+
+.shimeji-section-body > .shimeji-section:first-child {
+	margin-top: 4px;
+}
+
+/* ---------- callouts ---------- */
+
+.shimeji-callout {
+	margin: 8px 0;
+	padding: 8px 12px;
+	border-radius: 4px;
+	border-left: 3px solid var(--text-muted);
+	background: var(--background-secondary);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	line-height: 1.5;
+}
+
+.shimeji-callout-warning {
+	border-left-color: var(--text-warning, #d08a1e);
+	background: rgba(208, 138, 30, 0.09);
+}
+
+.shimeji-callout-tip {
+	border-left-color: var(--interactive-accent);
+	background: rgba(79, 168, 255, 0.09);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.shimeji-section-title::before { transition: none; }
+}

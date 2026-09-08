@@ -1,0 +1,10 @@
+{
+	"id": "obsidian-shimeji",
+	"name": "Shimeji Desktop Mascot",
+	"version": "0.1.0",
+	"minAppVersion": "1.4.0",
+	"description": "An animated desktop-mascot companion that walks, climbs and sits inside the Obsidian window, skinned with your own Shimeji-compatible artwork packs.",
+	"author": "Krystof Skala",
+	"authorUrl": "https://github.com/krystofskala",
+	"isDesktopOnly": false
+}
