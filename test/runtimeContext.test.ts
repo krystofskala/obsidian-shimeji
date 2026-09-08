@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createRuntimeContext } from "../src/shimeji/RuntimeContext";
-import { evaluate, parseExpression } from "../src/shimeji/Expression";
+import { evaluate, evaluateCondition, parseCondition, parseExpression } from "../src/shimeji/Expression";
 import { Random } from "../src/engine/Random";
 import type { LedgeSource, MascotPhysics } from "../src/engine/types";
 
@@ -114,5 +114,31 @@ describe("createRuntimeContext — Math.random", () => {
 		const v = evaluate(parseExpression("Math.random"), ctx) as number;
 		expect(v).toBeGreaterThanOrEqual(0);
 		expect(v).toBeLessThan(1);
+	});
+});
+
+describe("mascot.mood", () => {
+	function ctxWithMood(mood?: string) {
+		return createRuntimeContext(makePhysics(), ENV, 0, new Random(1), undefined, mood);
+	}
+
+	it("resolves to the mood it was handed", () => {
+		expect(evaluate(parseExpression("mascot.mood"), ctxWithMood("angry"))).toBe("angry");
+	});
+
+	it("compares against a string literal, which is how a behaviour condition gates on it", () => {
+		// The whole point of exposing it: BehaviorAI drops a behaviour whose condition is false
+		// from the candidate list outright, so this is a real "don't do this while angry" gate --
+		// unlike an animation variant's own `moods` list, which only picks between alternatives.
+		expect(evaluateCondition(parseCondition('${mascot.mood != "angry"}'), ctxWithMood("angry"))).toBe(false);
+		expect(evaluateCondition(parseCondition('${mascot.mood != "angry"}'), ctxWithMood("bored"))).toBe(true);
+		expect(evaluateCondition(parseCondition('${mascot.mood == "bored"}'), ctxWithMood("bored"))).toBe(true);
+	});
+
+	it("is undefined when no mood was supplied, rather than pretending to be normal", () => {
+		// A host that tracks no mood has to stay distinguishable from a mascot that is merely
+		// unremarkable, or `mascot.mood != "angry"` would quietly pass somewhere that has no idea
+		// whether the mascot is angry at all.
+		expect(evaluate(parseExpression("mascot.mood"), ctxWithMood())).toBeUndefined();
 	});
 });

@@ -51,6 +51,7 @@ export class PackDriver implements MascotDriver {
 			elapsedMs,
 			this.rng,
 			mascot.variables,
+			mascot.mood,
 		);
 		const ctx = withLocals(baseCtx, { FootX: mascot.dragFootX });
 		const poses = this.resolveDisplayPoses(actionName, ctx);

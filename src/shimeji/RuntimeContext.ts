@@ -77,6 +77,10 @@ export function createRuntimeContext(
 	elapsedMs: number,
 	rng: Random,
 	variables?: Map<string, unknown>,
+	/** The mascot's current mood, surfaced to conditions as `mascot.mood`. Optional: a caller with
+	 * no mood to report (a test, or a host that doesn't track one) leaves it undefined rather than
+	 * inventing "normal", which a condition could not tell from a genuinely unremarkable mascot. */
+	mood?: string,
 ): ExprContext {
 	const floor = physics.currentFloor?.kind === "floor" ? physics.currentFloor : undefined;
 	const wall = physics.currentWall?.kind === "wall" ? physics.currentWall : undefined;
@@ -185,6 +189,16 @@ export function createRuntimeContext(
 			return typeof v === "number" || typeof v === "string" || typeof v === "boolean" ? v : undefined;
 		}
 		switch (key) {
+			// Invented, with no counterpart in real shimeji-ee (see engine/mood.ts) — exposed as a
+			// plain string so a pack can gate a whole behaviour on it: a behaviour whose condition
+			// reads `${mascot.mood != "angry"}` is simply never a candidate while angry (see
+			// BehaviorAI's own candidate loop). That is a real gate, unlike an animation variant's
+			// own `moods` list, which only ever *chooses between* an action's alternatives and
+			// deliberately falls back to the whole pool rather than leave nothing to play.
+			// Undefined, not "normal", when the host tracks no mood at all, so a condition can tell
+			// "there is no mood system here" apart from "currently unremarkable".
+			case "mood":
+				return mood;
 			case "anchor":
 				if (tail[0] === "x") return physics.x;
 				if (tail[0] === "y") return physics.y;

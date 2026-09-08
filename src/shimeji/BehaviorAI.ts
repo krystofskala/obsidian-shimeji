@@ -1040,6 +1040,7 @@ export class BehaviorAI {
 			mascot.stateElapsedMs,
 			this.rng,
 			mascot.variables,
+			mascot.mood,
 		);
 		return { mascot, ctx, ambient: ambientPointer, config, paneActions };
 	}
