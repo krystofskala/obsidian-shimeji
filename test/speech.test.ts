@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { linesFor, parseSpeechLines, speechLinesTemplate, unmatchedTags, withRefreshedCheatSheet } from "../src/speech/speechLines";
 import { DEFAULT_SPEECH_OPTIONS, SpeechScheduler } from "../src/speech/SpeechScheduler";
-import { resolveSpeechPool, SpeechBubbles } from "../src/speech/SpeechBubbles";
+import { resolveSpeechPool, resolveSpeechSourcePath, SpeechBubbles } from "../src/speech/SpeechBubbles";
 import { DEFAULT_VAULT_REACTION_OPTIONS } from "../src/speech/vaultReactions";
 import type { Mascot } from "../src/engine/Mascot";
 
@@ -474,6 +474,33 @@ describe("resolveSpeechPool", () => {
 		// pool for that character.
 		const packPools = new Map([["some-pack", new Map()]]);
 		expect(resolveSpeechPool("some-pack", general, packPools)).toBe(general);
+	});
+});
+
+describe("resolveSpeechSourcePath", () => {
+	const { pool: general } = parseSpeechLines("Off I go @Walk");
+	const { pool: special } = parseSpeechLines("Only I say this @Walk");
+	const generalPath = "Shimeji/Shimeji speech.md";
+	const packPaths = new Map([["some-pack", "Shimeji/Shimeji speech - kara.md"]]);
+
+	it("reports the general file while no character pack is loaded", () => {
+		expect(resolveSpeechSourcePath(null, general, general, generalPath, packPaths)).toBe(generalPath);
+	});
+
+	it("reports a character's own file once its pool is the one in use", () => {
+		expect(resolveSpeechSourcePath("some-pack", special, general, generalPath, packPaths)).toBe("Shimeji/Shimeji speech - kara.md");
+	});
+
+	it("reports the general file for a pack whose pool fell back to it", () => {
+		// The case the identity comparison exists for: resolveSpeechPool hands back `general` both
+		// for a pack with no override and for one whose override file parsed to nothing. Either way
+		// the line genuinely came out of the general file, so that is the note its embeds have to
+		// resolve against -- re-deriving "does an override exist" here could answer differently.
+		expect(resolveSpeechSourcePath("some-pack", general, general, generalPath, packPaths)).toBe(generalPath);
+	});
+
+	it("falls back to the general file for a pool with no path recorded for it", () => {
+		expect(resolveSpeechSourcePath("unknown-pack", special, general, generalPath, packPaths)).toBe(generalPath);
 	});
 });
 

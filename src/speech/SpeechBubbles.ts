@@ -30,6 +30,28 @@ export function resolveSpeechPool(packId: string | null, defaultPool: SpeechPool
 }
 
 /**
+ * Which file a resolved pool's lines were written in, for resolving their `![[embeds]]` against
+ * the note they came from.
+ *
+ * Takes the pool `resolveSpeechPool` already chose and compares it by identity, rather than
+ * re-testing that function's own "an override exists and is not empty" condition a second time.
+ * The two can then never disagree — in particular a pack whose override file exists but parsed to
+ * nothing falls through to the general pool *and* to the general pool's path, because the general
+ * file is genuinely where its line came from.
+ */
+export function resolveSpeechSourcePath(
+	packId: string | null,
+	resolvedPool: SpeechPool,
+	defaultPool: SpeechPool,
+	defaultPath: string,
+	packPaths: ReadonlyMap<string, string>,
+): string {
+	if (packId === null) return defaultPath;
+	if (resolvedPool === defaultPool) return defaultPath;
+	return packPaths.get(packId) ?? defaultPath;
+}
+
+/**
  * Draws what the mascots say.
  *
  * Bubbles live in their own fixed layer on `document.body` rather than inside the mascot's element,
@@ -58,6 +80,12 @@ export class SpeechBubbles {
 	 * entry here, or an empty one, simply falls back to defaultPool; introducing this never
 	 * silenced anyone who already had lines in the general file. */
 	private packPools = new Map<string, SpeechPool>();
+	/** The vault paths the two pools above were read from, kept alongside them purely so a rendered
+	 * line's `![[embed]]` can be resolved the way it would be inside the note it was written in.
+	 * Empty until the first load, which is harmless: an empty source path is exactly what this used
+	 * to pass unconditionally. */
+	private defaultPoolPath = "";
+	private packPoolPaths = new Map<string, string>();
 	private style: BubbleStyle = "theme";
 	private enabled = true;
 
@@ -80,20 +108,30 @@ export class SpeechBubbles {
 		document.body.appendChild(this.layer);
 	}
 
-	setPool(pool: SpeechPool): void {
+	/** `sourcePath` is the vault path the pool was read from — see `sourcePathFor`. Optional, and
+	 * empty by default, so a caller that has no file behind its pool (a test building one by hand)
+	 * keeps working exactly as before. */
+	setPool(pool: SpeechPool, sourcePath = ""): void {
 		this.defaultPool = pool;
+		this.defaultPoolPath = sourcePath;
 	}
 
 	/** Replaces every character-specific pool at once — called after (re)loading whatever files
 	 * settings.packSpeechFiles currently points at, so a pack that had an override and lost it (the
 	 * path was cleared) correctly falls back to the general pool on the very next tick. */
-	setPackPools(pools: Map<string, SpeechPool>): void {
+	setPackPools(pools: Map<string, SpeechPool>, sourcePaths = new Map<string, string>()): void {
 		this.packPools = pools;
+		this.packPoolPaths = sourcePaths;
 	}
 
 	/** The pool a given mascot actually reads from — see resolveSpeechPool. */
 	private poolFor(mascot: Mascot): SpeechPool {
 		return resolveSpeechPool(this.packIdOf(mascot), this.defaultPool, this.packPools);
+	}
+
+	/** The file a given mascot's lines were written in — see resolveSpeechSourcePath. */
+	private sourcePathFor(mascot: Mascot): string {
+		return resolveSpeechSourcePath(this.packIdOf(mascot), this.poolFor(mascot), this.defaultPool, this.defaultPoolPath, this.packPoolPaths);
 	}
 
 	setOptions(options: SpeechOptions): void {
@@ -195,6 +233,13 @@ export class SpeechBubbles {
 	 * every entry (including a redirected scripted line — see addScriptedLine there). A plain
 	 * line with no embed renders exactly as it did under setText: one paragraph, no visible markup.
 	 *
+	 * The source path matters and used to be passed as `""`, which is why short embeds never
+	 * worked: it is how Obsidian resolves a link, and with no note to resolve against
+	 * `![[chart.png|120]]` finds nothing. An unresolved embed is not a visible error either — the
+	 * part after the pipe is a link's *alias*, so a failed one renders as the bare text `120`,
+	 * which reads as the mascot solemnly announcing a number. Passing the file the line was
+	 * actually written in makes short embeds resolve exactly as they do in that note.
+	 *
 	 * Async (embed resolution/image load isn't instant), so a per-mascot `generation` counter on
 	 * the bubbles map guards against a slow render finishing *after* a newer line has already
 	 * replaced this same mascot's bubble — the same "a later call wins" shape
@@ -210,7 +255,7 @@ export class SpeechBubbles {
 		this.bubbles.set(mascot, { el, until: performance.now() + BUBBLE_MS, generation });
 		this.position(mascot, el);
 		el.empty();
-		void MarkdownRenderer.renderMarkdown(text, el, "", this.rendererLifecycle).then(() => {
+		void MarkdownRenderer.renderMarkdown(text, el, this.sourcePathFor(mascot), this.rendererLifecycle).then(() => {
 			if (this.bubbles.get(mascot)?.generation !== generation) return;
 			// The embed may have changed the bubble's own size once it finished laying out.
 			this.position(mascot, el);

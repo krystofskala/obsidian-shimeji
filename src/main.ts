@@ -1591,22 +1591,27 @@ export default class ShimejiPlugin extends Plugin {
 	 * files is saved. One call for both, rather than a second method to remember to also call,
 	 * since a mascot's own pool always depends on both — see SpeechBubbles.poolFor. */
 	async reloadSpeechLines(): Promise<void> {
-		const general = await this.loadSpeechFile(this.settings.speechFilePath.trim());
+		const generalPath = this.settings.speechFilePath.trim();
+		const general = await this.loadSpeechFile(generalPath);
 		this.speechPool = general.pool;
 		this.speechStats = general.stats;
-		this.speech.setPool(general.pool);
+		// The path travels with the pool so a line's own `![[embed]]` resolves against the note it
+		// was written in — see SpeechBubbles.sourcePathFor.
+		this.speech.setPool(general.pool, generalPath);
 
 		const pools = new Map<string, SpeechPool>();
+		const paths = new Map<string, string>();
 		const stats = new Map<string, SpeechStats>();
 		for (const [packId, rawPath] of Object.entries(this.settings.packSpeechFiles)) {
 			const path = rawPath.trim();
 			if (!path) continue;
 			const loaded = await this.loadSpeechFile(path);
 			pools.set(packId, loaded.pool);
+			paths.set(packId, path);
 			stats.set(packId, loaded.stats);
 		}
 		this.packSpeechStats = stats;
-		this.speech.setPackPools(pools);
+		this.speech.setPackPools(pools, paths);
 	}
 
 	/** Reads and parses one speech file, shared between the general file and every
