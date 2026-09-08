@@ -99,9 +99,21 @@ export function nextLapWaypoint(run: LapRun): Vec2 | undefined {
  * `allowSurgery: false` is the whole reason the option exists — see LapRunner.tick. */
 export interface LapWalker {
 	readonly hasSpotOrder: boolean;
-	orderToSpot(point: Vec2, options?: { allowSurgery?: boolean }): void;
+	orderToSpot(point: Vec2, options?: { allowSurgery?: boolean; travelActions?: string[] }): void;
 	cancelSpotOrder(): void;
 }
+
+/**
+ * What a lap's floor legs are performed with, in preference order.
+ *
+ * Ordinary orders use Dash, and rightly: DEFAULT_ROUTE_OPTIONS costs a floor leg at 8px/tick,
+ * which is Dash's own speed, and those costs decide real routing choices. A lap can afford to
+ * differ because nothing decides anything from its estimates — surgery is off, and there is no
+ * give-up threshold to mis-time. What it buys is that a lap is a *sustained* journey, several legs
+ * end to end, and a burst move repeated four times a side reads as frantic rather than as running
+ * a lap. Run is the pack's own action for covering ground steadily.
+ */
+const LAP_TRAVEL_ACTIONS = ["Run", "Dash", "Walk"];
 
 /**
  * Drives one lap run per mascot, issuing the next corner as each is reached.
@@ -146,6 +158,6 @@ export class LapRunner {
 			this.runs.delete(mascot);
 			return;
 		}
-		mascot.orderToSpot(next, { allowSurgery: false });
+		mascot.orderToSpot(next, { allowSurgery: false, travelActions: LAP_TRAVEL_ACTIONS });
 	}
 }

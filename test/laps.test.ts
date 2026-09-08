@@ -83,10 +83,12 @@ describe("LapRunner", () => {
 			hasSpotOrder: false,
 			ordered: [] as Vec2[],
 			surgeryFlags: [] as (boolean | undefined)[],
+			travel: [] as (string[] | undefined)[],
 			cancelled: 0,
-			orderToSpot(point: Vec2, options?: { allowSurgery?: boolean }) {
+			orderToSpot(point: Vec2, options?: { allowSurgery?: boolean; travelActions?: string[] }) {
 				this.ordered.push(point);
 				this.surgeryFlags.push(options?.allowSurgery);
+				this.travel.push(options?.travelActions);
 				this.hasSpotOrder = true;
 			},
 			cancelSpotOrder() {
@@ -121,6 +123,18 @@ describe("LapRunner", () => {
 		runner.start(mascot as LapWalker, BOUNDS, { x: 0, y: 800 }, 1);
 		runner.tick(mascot as LapWalker);
 		expect(mascot.surgeryFlags).toEqual([false]);
+	});
+
+	it("runs the floor legs rather than dashing them", () => {
+		// A lap is a sustained journey, several legs end to end, and a burst move repeated four
+		// times a side reads as frantic rather than as running a lap. Ordinary orders keep Dash,
+		// whose speed is what the router's own cost model is built on.
+		const runner = new LapRunner();
+		const mascot = fakeMascot();
+		runner.start(mascot as LapWalker, BOUNDS, { x: 0, y: 800 }, 1);
+		runner.tick(mascot as LapWalker);
+		expect(mascot.travel[0]?.[0]).toBe("Run");
+		expect(mascot.travel[0]).toContain("Walk");
 	});
 
 	it("stops issuing once the run is done, and forgets the mascot", () => {

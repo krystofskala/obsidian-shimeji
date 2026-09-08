@@ -199,6 +199,10 @@ export class BehaviorAI {
 	private spotSurgeries = 0;
 	/** Whether the current order may rearrange the layout at all — see orderToSpot's own option. */
 	private spotSurgeryAllowed = true;
+	/** Which pack actions the current order's floor legs should use, if it asked for something
+	 * other than the default — see orderToSpot's own option, and ROUTE_ACTIONS on why the default
+	 * is what it is. */
+	private spotTravelActions?: string[];
 	/**
 	 * What the mascot is currently *doing* about an outstanding order, when that is more than simply
 	 * walking there. Each phase is a piece of physical work with an animation behind it, which is the
@@ -246,9 +250,10 @@ export class BehaviorAI {
 	 * than a reason to stop — by walking to a real "+" button and then shoving the resulting divider
 	 * into place. See PaneActions.listNewPaneControls.
 	 */
-	orderToSpot(point: Vec2, options?: { allowSurgery?: boolean }): void {
+	orderToSpot(point: Vec2, options?: { allowSurgery?: boolean; travelActions?: string[] }): void {
 		this.orderedSpot = { x: point.x, y: point.y };
 		this.spotOrderJustIssued = true;
+		this.spotTravelActions = options?.travelActions;
 		// Opt-out for orders that are issued repeatedly and automatically — running laps, four
 		// corners at a time — where rearranging the user's panes to reach an awkward corner is
 		// never the right answer, however reasonable it is for one deliberate click.
@@ -723,7 +728,11 @@ export class BehaviorAI {
 		// rather than as kicking off a wall.
 		const hopY = effectiveVia === "chimney" && targetY !== undefined ? physics.y + Math.sign(targetY - physics.y) * Math.min(CHIMNEY_HOP_PX, Math.abs(targetY - physics.y)) : targetY;
 
-		for (const name of ROUTE_ACTIONS[effectiveVia]) {
+		// An order may name its own floor actions. Only floor legs, and only while that order is
+		// what is being driven: a climb or a chimney hop has exactly one action that performs it,
+		// and following/roaming legs are nobody's order to re-style.
+		const travelActions = effectiveVia === "walk" && this.orderedSpot && this.spotTravelActions ? this.spotTravelActions : ROUTE_ACTIONS[effectiveVia];
+		for (const name of travelActions) {
 			if (!this.pack.actions.has(name)) continue;
 			this.currentBehavior = attributeTo;
 			// Each step gets *only* the axis its move actually travels along, which is exactly how the
