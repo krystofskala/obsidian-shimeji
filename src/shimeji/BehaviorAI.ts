@@ -190,6 +190,8 @@ export class BehaviorAI {
 	 * !isRunning / end-of-action reselection below keeps driving it leg by leg exactly as before. */
 	private spotOrderJustIssued = false;
 	private spotSurgeries = 0;
+	/** Whether the current order may rearrange the layout at all — see orderToSpot's own option. */
+	private spotSurgeryAllowed = true;
 	/**
 	 * What the mascot is currently *doing* about an outstanding order, when that is more than simply
 	 * walking there. Each phase is a piece of physical work with an animation behind it, which is the
@@ -237,9 +239,13 @@ export class BehaviorAI {
 	 * than a reason to stop — by walking to a real "+" button and then shoving the resulting divider
 	 * into place. See PaneActions.listNewPaneControls.
 	 */
-	orderToSpot(point: Vec2): void {
+	orderToSpot(point: Vec2, options?: { allowSurgery?: boolean }): void {
 		this.orderedSpot = { x: point.x, y: point.y };
 		this.spotOrderJustIssued = true;
+		// Opt-out for orders that are issued repeatedly and automatically — running laps, four
+		// corners at a time — where rearranging the user's panes to reach an awkward corner is
+		// never the right answer, however reasonable it is for one deliberate click.
+		this.spotSurgeryAllowed = options?.allowSurgery ?? true;
 		this.spotSurgeries = 0;
 		this.spotSpentDrops = [];
 		this.spotPhase = undefined;
@@ -433,7 +439,7 @@ export class BehaviorAI {
 			}
 		}
 
-		const canOperate = this.spotSurgeries < MAX_SPOT_SURGERIES && env.paneActions?.pressNewPaneControl !== undefined && surgeryControl !== undefined;
+		const canOperate = this.spotSurgeryAllowed && this.spotSurgeries < MAX_SPOT_SURGERIES && env.paneActions?.pressNewPaneControl !== undefined && surgeryControl !== undefined;
 		if (canOperate && surgeryControl) {
 			// The graph a split would actually produce. Two details make this an estimate of the real
 			// operation rather than of a wish:

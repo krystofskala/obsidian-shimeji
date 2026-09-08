@@ -18,6 +18,7 @@ import type { PaneActions } from "./engine/PaneActions";
 import { Random } from "./engine/Random";
 import { Stage } from "./engine/Stage";
 import { DEFAULT_ENGINE_CONFIG, type EngineConfig } from "./engine/types";
+import { LapRunner, type LapBounds } from "./engine/laps";
 import { MOOD_TRIGGER_IDS } from "./engine/mood";
 import { effectiveScale } from "./engine/responsiveScale";
 import { ObsidianPaneActions } from "./ObsidianPaneActions";
@@ -102,6 +103,8 @@ export default class ShimejiPlugin extends Plugin {
 	 * missing file and an empty one resolve to the same generic-default outcome, they only explain
 	 * differently on the settings screen (packSpeechStats.fileExists is the speech-file precedent). */
 	personaFileExists: Map<string, boolean> = new Map();
+	/** Laps in progress, keyed weakly by mascot — see engine/laps.ts. */
+	private laps = new LapRunner();
 	/** Who lives in the room. Created unconditionally — it is inert until the room's pane
 	 * is actually open, and having it always present keeps every call site free of a null check. */
 	readonly residency = new Residency({
@@ -393,6 +396,27 @@ export default class ShimejiPlugin extends Plugin {
 				if (isPersonaFile) void this.reloadPersonas();
 			}),
 		);
+		this.addCommand({
+			id: "shimeji-run-laps",
+			name: "Run one lap around the window (all mascots)",
+			callback: () => {
+				const mascots = this.stage?.getMascots() ?? [];
+				if (mascots.length === 0) {
+					new Notice("Shimeji: no mascots on screen");
+					return;
+				}
+				for (const mascot of mascots) this.startLaps(mascot, 1);
+				new Notice(`Shimeji: ${mascots.length} off around the window`);
+			},
+		});
+		this.addCommand({
+			id: "shimeji-stop-laps",
+			name: "Stop running laps (all mascots)",
+			callback: () => {
+				for (const mascot of this.stage?.getMascots() ?? []) this.laps.stop(mascot);
+				new Notice("Shimeji: laps stopped");
+			},
+		});
 		this.addCommand({
 			id: "shimeji-open-speech-file",
 			name: "Open the speech-lines file",
@@ -1381,6 +1405,7 @@ export default class ShimejiPlugin extends Plugin {
 					if (mascot.consumeJustReachedSpot()) this.speech.say(mascot, "Reached my target!");
 				}
 			}
+			for (const mascot of mascots) this.laps.tick(mascot);
 			this.speech.tick(mascots, this.stage?.getWorldTop() ?? 0);
 			this.chatBubble.update(this.residency.residentMascot, view?.paneRect(), view?.layout()?.rect);
 			// Keeps the room's own toggle button in sync when the bubble closes on its own — the
@@ -1707,6 +1732,21 @@ export default class ShimejiPlugin extends Plugin {
 		return true;
 	}
 
+	/**
+	 * The rectangle a lap runs around: the mascot's own world, which starts below Obsidian's title
+	 * bar and tab strip rather than at the top of the window — the same worldTop every ledge and
+	 * the speech layer are already measured against, so a lap hugs the surfaces that actually
+	 * exist instead of aiming at chrome the mascot can never occupy.
+	 */
+	private lapBounds(mascot: Mascot): LapBounds {
+		const viewport = mascot.getViewportSize();
+		return { left: 0, right: viewport.width, top: this.stage?.getWorldTop() ?? 0, bottom: viewport.height };
+	}
+
+	private startLaps(mascot: Mascot, laps: number): void {
+		this.laps.start(mascot, this.lapBounds(mascot), { x: mascot.physics.x, y: mascot.physics.y }, laps);
+	}
+
 	/** Pushes the current speech settings to the bubbles. */
 	applySpeechSettings(): void {
 		this.speech.setEnabled(this.settings.speechEnabled);
@@ -1957,6 +1997,38 @@ export default class ShimejiPlugin extends Plugin {
 				.setIcon("copy")
 				.onClick(() => this.spawnAnotherOfCharacter(mascot)),
 		);
+		if (this.laps.isRunning(mascot)) {
+			menu.addItem((item) =>
+				item
+					.setTitle("Stop running laps")
+					.setIcon("square")
+					.onClick(() => {
+						this.laps.stop(mascot);
+						new Notice("Shimeji: lap stopped");
+					}),
+			);
+		} else {
+			menu.addItem((item) => {
+				item.setTitle("Run laps around the window").setIcon("rotate-cw");
+				// Obsidian has had submenus since 1.4 — this plugin's own minAppVersion — but the
+				// bundled `obsidian` typings this repo builds against don't declare setSubmenu.
+				// Narrowed to just that one method rather than casting the whole item to `any`, so
+				// everything else on MenuItem stays type-checked, and probed at runtime so a host
+				// without it degrades to a plain one-lap click instead of throwing mid-menu.
+				const withSubmenu = item as unknown as Partial<{ setSubmenu(): Menu }>;
+				if (typeof withSubmenu.setSubmenu !== "function") {
+					item.onClick(() => this.startLaps(mascot, 1));
+					return;
+				}
+				// Fixed counts rather than a typed number: the point of this living on the mascot's
+				// own right-click menu is that it is a two-click whim, not a form to fill in.
+				const submenu = withSubmenu.setSubmenu();
+				for (const laps of [1, 3, 5]) {
+					submenu.addItem((sub) => sub.setTitle(`${laps} lap${laps === 1 ? "" : "s"}`).onClick(() => this.startLaps(mascot, laps)));
+				}
+				submenu.addItem((sub) => sub.setTitle("Until I stop it").onClick(() => this.startLaps(mascot, Infinity)));
+			});
+		}
 		menu.addItem((item) =>
 			item
 				.setTitle("Remove this Shimeji")

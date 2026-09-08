@@ -135,7 +135,7 @@ export interface MascotDriver {
 	setFollowingMouse?(following: boolean): void;
 	/** An explicit order to reach one specific point, reshaping the layout if that is what it takes.
 	 * Invented; see BehaviorAI.orderToSpot. */
-	orderToSpot?(point: Vec2): void;
+	orderToSpot?(point: Vec2, options?: { allowSurgery?: boolean }): void;
 	cancelSpotOrder?(): void;
 	/** Whether a "get to that spot" order is still outstanding, so a caller can wait for it. */
 	hasSpotOrder?(): boolean;
@@ -398,8 +398,8 @@ export class Mascot {
 	}
 
 	/** Sends this mascot to a specific viewport point — see MascotDriver.orderToSpot. */
-	orderToSpot(point: Vec2): void {
-		this.driver?.orderToSpot?.(point);
+	orderToSpot(point: Vec2, options?: { allowSurgery?: boolean }): void {
+		this.driver?.orderToSpot?.(point, options);
 	}
 
 	/** Whether an order is still outstanding. The in-Obsidian self-test waits on this rather than
