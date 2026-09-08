@@ -412,6 +412,14 @@ export class Stage {
 		return this.ledges;
 	}
 
+	/** The ledges one mascot actually navigates by, filters and all — which is a different and
+	 * usually smaller set than `getLedges()`. Exposed for diagnostics: reporting the raw list is
+	 * actively misleading, since it still shows walls trimmed away for being unclimbably close to
+	 * the chrome or wedged against the window edge, and shows the untrimmed tops of the rest. */
+	getLedgesFor(mascot: Mascot): Ledge[] {
+		return this.ledgesFor(mascot);
+	}
+
 	/**
 	 * Runs `cb` after every mascot has rendered this frame, before the next one is scheduled.
 	 *

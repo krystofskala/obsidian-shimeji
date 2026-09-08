@@ -209,7 +209,10 @@ export function installDebugApi(
 				console.info("[obsidian-shimeji] no mascot");
 				return;
 			}
-			const ledges = stage.getLedges();
+			// The mascot's own filtered set, not the raw one: the raw list still contains walls
+			// trimmed away as unclimbable or edge-wedged, and shows the untrimmed tops of the rest,
+			// which is exactly the misreading that sent the first round of this diagnosis wrong.
+			const ledges = stage.getLedgesFor(mascot);
 			const viewport = mascot.getViewportSize();
 			const worldTop = stage.getWorldTop();
 			const standing = mascot.height * mascot.scale;
@@ -231,6 +234,11 @@ export function installDebugApi(
 			});
 			const walls = ledges.filter((l): l is Extract<typeof l, { kind: "wall" }> => l.kind === "wall");
 			console.info(`  walls (${walls.length}): ${walls.map((w) => `${w.side}@${Math.round(w.x)} y${Math.round(w.y1)}..${Math.round(w.y2)} ${w.source}`).join(" | ") || "none"}`);
+			// The top leg of a lap lives or dies on these: a wall can only be climbed to
+			// minClimbableY, so crossing the top means handing off to a ceiling from there.
+			const ceilings = ledges.filter((l): l is Extract<typeof l, { kind: "ceiling" }> => l.kind === "ceiling");
+			console.info(`  ceilings (${ceilings.length}): ${ceilings.map((c) => `y${Math.round(c.y)} x${Math.round(c.x1)}..${Math.round(c.x2)} ${c.source}`).join(" | ") || "none"}`);
+			console.info(`  climb ceiling for this mascot: y${Math.round(minClimbableY(worldTop, standing))} — the highest an anchor may go; a ceiling above that needs a handoff`);
 		},
 		explainOrder(x, y) {
 			const stage = getStage();

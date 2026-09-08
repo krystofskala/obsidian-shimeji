@@ -35,12 +35,16 @@ export interface LapRun {
 /**
  * The four corners, counter-clockwise from the bottom left.
  *
- * Inset from the true edge by `margin`: a corner is the meeting point of two surfaces rather than
- * a place that is itself standable, and a target sitting exactly on the join routes badly — the
- * router has to pick one of the two ledges to end on, and the tie is decided by rounding rather
- * than by anything meaningful. A few pixels in lands the target unambiguously on the wall.
+ * `margin` defaults to zero, and the corners sit exactly on the walls and the floor, because that
+ * is where a mascot can actually *be*. An earlier version inset them a few pixels on the theory
+ * that a target on the join between two surfaces routes ambiguously; what it really did was move
+ * the top corners off the wall into open air. A live trace settled it: a 73px mascot clinging to
+ * the window's left wall sits at x=0 and can climb no higher than y=104 (see minClimbableY), while
+ * the inset corner was at (8, 112) — eight pixels to the side of the only thing within reach, with
+ * no floor under it for another 1280px. The mascot climbed to the top of the wall, could get no
+ * nearer, and held an order it could never finish.
  */
-export function lapCorners(bounds: LapBounds, margin = 8): Vec2[] {
+export function lapCorners(bounds: LapBounds, margin = 0): Vec2[] {
 	const left = bounds.left + margin;
 	const right = bounds.right - margin;
 	const top = bounds.top + margin;
