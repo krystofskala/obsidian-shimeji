@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Setting } from "obsidian";
-import type { Mood } from "../engine/mood";
+import { MOODS, type Mood } from "../engine/mood";
 import type ShimejiPlugin from "../main";
 import { listPackImages } from "../shimeji/PackLoader";
 import type { CustomActionSpec, CustomPoseSpec } from "../shimeji/customContent";
@@ -9,8 +9,6 @@ import { SpriteSheetModal } from "../sprites/SpriteSheetModal";
 import { buildReplacementActionSpec, findReferenceVelocity, poseDefToCustomPoseSpec } from "./animationOptions";
 import { imagesUsedByActions, imagesUsedByPoseLists, imagesWorthSlicing } from "./imageCandidates";
 import { PoseSequenceFitModal } from "./PoseSequenceFitModal";
-
-const MOODS: Mood[] = ["happy", "normal", "bored", "angry"];
 
 /** One option as this modal edits it — poses and its (possibly empty) mood restriction kept
  * together, since they're always edited, reordered, and removed as a unit. See

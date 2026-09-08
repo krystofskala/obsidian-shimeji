@@ -18,6 +18,7 @@ import type { PaneActions } from "./engine/PaneActions";
 import { Random } from "./engine/Random";
 import { Stage } from "./engine/Stage";
 import { DEFAULT_ENGINE_CONFIG, type EngineConfig } from "./engine/types";
+import { MOOD_TRIGGER_IDS } from "./engine/mood";
 import { effectiveScale } from "./engine/responsiveScale";
 import { ObsidianPaneActions } from "./ObsidianPaneActions";
 import { reconcileStoredSettings, resolveEffectiveSettings, type StoredShimejiSettings } from "./platformSettings";
@@ -1428,6 +1429,9 @@ export default class ShimejiPlugin extends Plugin {
 		return [
 			...this.speechTagVocabulary(),
 			...Object.values(VaultReactionTrigger),
+			// Unconditional for the same reason the vault triggers above are: moodEnabled gates
+			// whether a mood ever *changes*, not whether a tag written for one is a typo.
+			...MOOD_TRIGGER_IDS,
 			...this.settings.customVaultReactions.map((r) => r.tag.trim()).filter((tag) => tag.length > 0),
 		];
 	}

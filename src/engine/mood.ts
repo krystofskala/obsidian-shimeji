@@ -8,6 +8,26 @@
  */
 export type Mood = "happy" | "normal" | "bored" | "angry";
 
+/** Every mood, in a stable order. Shared so the animation-variant mood picker, the speech tag
+ * vocabulary and the debug listing all enumerate the same four rather than each keeping a copy
+ * that could fall behind the union type above. */
+export const MOODS: Mood[] = ["happy", "normal", "bored", "angry"];
+
+/**
+ * The speech tag a mood is announced under — `mood:bored`, written `@mood:bored` in the file.
+ *
+ * Namespaced with a colon for the same reason vault reactions are (see vaultReactions.ts, and
+ * speechLines.ts's own note on why TAG_PATTERN accepts `:` at all): a mood is not a behaviour
+ * name, and a bare `@bored` would be indistinguishable from a misspelled behaviour. `unmatchedTags`
+ * exists precisely to catch that misspelling, and could not do its job if the two shared a
+ * namespace.
+ */
+export function moodTriggerId(mood: Mood): string {
+	return `mood:${mood}`;
+}
+
+export const MOOD_TRIGGER_IDS: string[] = MOODS.map(moodTriggerId);
+
 /** Heat added to a mascot's own anger meter by a single throw, and how fast that meter decays
  * back toward zero on its own. One throw's heat (1) never reaches ANGER_THRESHOLD by itself — it
  * takes two within roughly ANGER_THRESHOLD / ANGER_DECAY_PER_SECOND seconds of each other to

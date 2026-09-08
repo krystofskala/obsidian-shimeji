@@ -1,4 +1,5 @@
 import { setVerboseLogging } from "./engine/debugLog";
+import { ANGER_DECAY_PER_SECOND, ANGER_THRESHOLD } from "./engine/mood";
 import { describeSurface } from "./engine/MovementAudit";
 import type { PaneActions } from "./engine/PaneActions";
 import { findRoute, fallDurationTicks, planDropThrough, routeDurationTicks } from "./engine/Routing";
@@ -38,6 +39,7 @@ export interface ShimejiDebugApi {
 	showOverlay(): void;
 	elementsAtTop(y?: number): void;
 	mascotRects(): void;
+	moods(): void;
 	dumpLedges(): void;
 	where(): void;
 	watch(seconds?: number): void;
@@ -143,6 +145,38 @@ export function installDebugApi(
 					right: Math.round(r.right),
 					bottom: Math.round(r.bottom),
 					pointerEvents: getComputedStyle(m.el).pointerEvents,
+				});
+			});
+		},
+		/**
+		 * Every live mascot's current mood, and the anger meter behind it.
+		 *
+		 * Exists because mood was otherwise completely unobservable: it biases movement speed by
+		 * 0.85x–1.35x and nothing else, which on a small sprite with no reference to compare
+		 * against is invisible — so a user could not tell a working mood system from a dead one.
+		 * `Mascot.mood`'s own comment has always claimed it was "exposed for the debug API"; this
+		 * is that claim finally becoming true.
+		 *
+		 * `secondsUntilCalm` is only meaningful while angry, and is what the meter's own decay
+		 * implies rather than a separately tracked timer — it says when the mood will lapse back to
+		 * the ambient baseline if the mascot is left alone from here.
+		 */
+		moods() {
+			const stage = getStage();
+			if (!stage) {
+				console.info("[obsidian-shimeji] no stage");
+				return;
+			}
+			const mascots = stage.getMascots();
+			if (mascots.length === 0) console.info("[obsidian-shimeji] no live mascots");
+			mascots.forEach((m, i) => {
+				const heat = m.angerHeatForDebug;
+				console.info(`[obsidian-shimeji] mascot#${i}`, {
+					mood: m.mood,
+					speedMultiplier: m.moodSpeedMultiplier,
+					angerHeat: Math.round(heat * 100) / 100,
+					angerThreshold: ANGER_THRESHOLD,
+					secondsUntilCalm: heat >= ANGER_THRESHOLD ? Math.ceil((heat - ANGER_THRESHOLD) / ANGER_DECAY_PER_SECOND) : 0,
 				});
 			});
 		},

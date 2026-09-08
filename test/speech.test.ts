@@ -4,6 +4,7 @@ import { DEFAULT_SPEECH_OPTIONS, SpeechScheduler } from "../src/speech/SpeechSch
 import { resolveSpeechPool, resolveSpeechSourcePath, SpeechBubbles } from "../src/speech/SpeechBubbles";
 import { DEFAULT_VAULT_REACTION_OPTIONS } from "../src/speech/vaultReactions";
 import type { Mascot } from "../src/engine/Mascot";
+import { MOOD_TRIGGER_IDS, moodTriggerId, MOODS, type Mood } from "../src/engine/mood";
 
 /** A deterministic stand-in for Math.random: hands back the given values in order, then repeats
  * the last one, so a test states exactly the rolls it means. */
@@ -477,6 +478,28 @@ describe("resolveSpeechPool", () => {
 	});
 });
 
+describe("mood speech tags", () => {
+	it("namespaces every mood so it cannot be mistaken for a behaviour name", () => {
+		expect(MOOD_TRIGGER_IDS).toEqual(["mood:happy", "mood:normal", "mood:bored", "mood:angry"]);
+		expect(MOODS.map(moodTriggerId)).toEqual(MOOD_TRIGGER_IDS);
+	});
+
+	it("survives the tag scanner intact, colon and all", () => {
+		// TAG_PATTERN accepts ":" precisely so namespaced ids like these parse as one tag rather
+		// than stopping at the colon and leaving "angry" loose in the spoken text.
+		const { pool } = parseSpeechLines("Nech mě! @mood:angry");
+		expect([...pool.keys()]).toEqual(["mood:angry"]);
+		expect(pool.get("mood:angry")).toEqual(["Nech mě!"]);
+	});
+
+	it("is not reported as a typo against a pack's behaviour names", () => {
+		const { pool } = parseSpeechLines("Ticho po pěšině. @mood:bored");
+		expect(unmatchedTags(pool, ["Walk", "SitDown", ...MOOD_TRIGGER_IDS])).toEqual([]);
+		// ...and still is when the vocabulary genuinely doesn't have it, so the guard stays honest.
+		expect(unmatchedTags(pool, ["Walk", "SitDown"])).toEqual(["mood:bored"]);
+	});
+});
+
 describe("resolveSpeechSourcePath", () => {
 	const { pool: general } = parseSpeechLines("Off I go @Walk");
 	const { pool: special } = parseSpeechLines("Only I say this @Walk");
@@ -572,5 +595,29 @@ describe("SpeechBubbles redirect (tryRedirect)", () => {
 		speech.setPool(pool);
 		speech.announceEvent(mascot, "note:open");
 		expect(calls).toEqual(["Welcome back!"]);
+	});
+
+	it("remarks on a mood only when it changes, and never on the first one it sees", () => {
+		const { pool } = parseSpeechLines("Ugh, fine. @mood:bored");
+		const said: string[] = [];
+		const speech = new SpeechBubbles(DEFAULT_SPEECH_OPTIONS, undefined, rolls(0), (_m, text) => {
+			said.push(text);
+			return true;
+		});
+		speech.setPool(pool);
+		const moody = { mood: "normal", currentBehaviorName: undefined } as unknown as Mascot & { mood: Mood };
+
+		// First sight is the observer arriving, not the mascot doing something new.
+		speech.tick([moody]);
+		expect(said).toEqual([]);
+
+		moody.mood = "bored";
+		speech.tick([moody]);
+		expect(said).toEqual(["Ugh, fine."]);
+
+		// Still bored: a mood is a state, and this is not a running commentary on holding it.
+		speech.tick([moody]);
+		speech.tick([moody]);
+		expect(said).toEqual(["Ugh, fine."]);
 	});
 });

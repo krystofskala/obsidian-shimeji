@@ -1,5 +1,6 @@
 import { Component, MarkdownRenderer } from "obsidian";
 import type { Mascot } from "../engine/Mascot";
+import { moodTriggerId, type Mood } from "../engine/mood";
 import { SpeechScheduler, type SpeechOptions } from "./SpeechScheduler";
 import type { SpeechPool } from "./speechLines";
 import { DEFAULT_VAULT_REACTION_OPTIONS } from "./vaultReactions";
@@ -86,6 +87,10 @@ export class SpeechBubbles {
 	 * to pass unconditionally. */
 	private defaultPoolPath = "";
 	private packPoolPaths = new Map<string, string>();
+	/** Last mood seen per mascot, so `considerMood` can spot a transition. A WeakMap for the same
+	 * reason SpeechScheduler's own per-speaker state is one: a removed mascot should take its
+	 * bookkeeping with it without anything having to remember to clean up. */
+	private lastMood = new WeakMap<Mascot, Mood>();
 	private style: BubbleStyle = "theme";
 	private enabled = true;
 
@@ -187,6 +192,32 @@ export class SpeechBubbles {
 	}
 
 	/**
+	 * Remarks on a mood the moment it *changes*, not for as long as it lasts.
+	 *
+	 * A mood is a state, so what is worth saying something about is the transition into it — "the
+	 * vault's gone quiet, then" — where a line offered every tick for as long as the mood held
+	 * would be a running commentary on standing still. That makes it an event in `considerEvent`'s
+	 * sense rather than `consider`'s, which is why it goes through `announceEvent` and picks up the
+	 * vault-reaction pacing (a much longer per-mascot cooldown) instead of the behaviour one.
+	 *
+	 * The transition is detected here because `considerEvent` deliberately does no change-detection
+	 * of its own. The first mood ever seen for a mascot is recorded silently, exactly as `consider`
+	 * records a first behaviour and for the same reason: nothing changed — that is the observer
+	 * arriving — and without it every mascot on screen would announce its mood the moment the
+	 * plugin loaded.
+	 *
+	 * Needs no `moodEnabled` check: with the setting off `Mascot.mood` is hard-wired to "normal",
+	 * so after the first silent observation there is never another transition to report.
+	 */
+	private considerMood(mascot: Mascot): void {
+		const mood = mascot.mood;
+		const previous = this.lastMood.get(mascot);
+		this.lastMood.set(mascot, mood);
+		if (previous === undefined || previous === mood) return;
+		this.announceEvent(mascot, moodTriggerId(mood));
+	}
+
+	/**
 	 * One frame: offer every mascot's behaviour to the scheduler, then reposition and expire what
 	 * is on screen. Called from the plugin's existing loop rather than owning one of its own.
 	 *
@@ -210,6 +241,7 @@ export class SpeechBubbles {
 				if (pool.size === 0) continue;
 				const line = this.scheduler.consider(mascot, mascot.currentBehaviorName, pool, now, this.rng);
 				if (line) this.show(mascot, line);
+				this.considerMood(mascot);
 			}
 		}
 

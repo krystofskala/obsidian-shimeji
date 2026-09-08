@@ -595,6 +595,15 @@ export class Mascot {
 		return MOOD_SPEED_MULTIPLIER[this.mood];
 	}
 
+	/** The raw anger meter behind an "angry" mood, for the debug listing only — `mood` above is
+	 * what anything deciding anything should read. Worth exposing separately because the number is
+	 * the part that explains *why*: it says how close a mascot is to the threshold and, given
+	 * ANGER_DECAY_PER_SECOND, roughly how long it has left to cool off. Kept unclamped and
+	 * ungated by moodEnabled, matching the meter itself (see angerHeat's own comment). */
+	get angerHeatForDebug(): number {
+		return this.angerHeat;
+	}
+
 	private onWindowBlur = (): void => {
 		if (this.isDragging) this.finishDrag();
 		this.clearLongPress();
