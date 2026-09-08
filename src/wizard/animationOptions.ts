@@ -1,4 +1,4 @@
-import type { Mood } from "../engine/mood";
+import { MOODS, type Mood } from "../engine/mood";
 import { SHIMEJI_TICK_MS, SHIMEJI_TICKS_PER_SEC } from "../shimeji/constants";
 import { newSpecId, type CustomActionSpec, type CustomAnimationVariantSpec, type CustomPoseSpec } from "../shimeji/customContent";
 import type { ActionDef, PoseDef } from "../shimeji/types";
@@ -45,6 +45,37 @@ export function poseDefToCustomPoseSpec(pose: PoseDef): CustomPoseSpec {
 		velocityY: pose.velocity ? pose.velocity.y / SHIMEJI_TICKS_PER_SEC : 0,
 		durationTicks: Math.round(pose.durationMs / SHIMEJI_TICK_MS),
 	};
+}
+
+/**
+ * The moods an option actually plays in, with the stored shorthand spelled out.
+ *
+ * An empty `moods` means "any mood" on disk and at runtime (see ActionRunner.moodEligible), which
+ * is compact but is also exactly the thing that made the picker unreadable: four chips with none
+ * lit looks like nothing is enabled, when it means everything is. Expanding it here lets the UI
+ * show what is true — all four lit — while the stored shape stays as it was.
+ */
+export function moodsPlayedIn(moods: Mood[]): Mood[] {
+	return moods.length === 0 ? [...MOODS] : MOODS.filter((m) => moods.includes(m));
+}
+
+/**
+ * Turns one mood on or off for an option, returning the value to store.
+ *
+ * Normalises a full set back to `[]` so "plays in every mood" only ever has one representation on
+ * disk — the same one every pack written before mood restrictions existed already has, which is
+ * what keeps this backwards compatible in both directions.
+ *
+ * Refuses to remove the last mood: an option that plays in none would be dead weight the runtime
+ * could never show, and `moodEligible`'s own "never return an empty pool" fallback means it would
+ * not even fail visibly — it would silently play anyway, which is worse than not offering the
+ * choice. Returns the list unchanged in that case, so the caller can simply redraw.
+ */
+export function toggleOptionMood(moods: Mood[], mood: Mood): Mood[] {
+	const played = moodsPlayedIn(moods);
+	const next = played.includes(mood) ? played.filter((m) => m !== mood) : MOODS.filter((m) => played.includes(m) || m === mood);
+	if (next.length === 0) return moods;
+	return next.length === MOODS.length ? [] : next;
 }
 
 /**

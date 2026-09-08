@@ -6,7 +6,7 @@ import type { CustomActionSpec, CustomPoseSpec } from "../shimeji/customContent"
 import { decodeVaultImage, packImagePath, pixelsToPngBytes, writePackImage } from "../sprites/imageIo";
 import { flipAnchorHorizontal, flipHorizontal } from "../sprites/pixels";
 import { SpriteSheetModal } from "../sprites/SpriteSheetModal";
-import { buildReplacementActionSpec, findReferenceVelocity, poseDefToCustomPoseSpec } from "./animationOptions";
+import { buildReplacementActionSpec, findReferenceVelocity, moodsPlayedIn, poseDefToCustomPoseSpec, toggleOptionMood } from "./animationOptions";
 import { imagesUsedByActions, imagesUsedByPoseLists, imagesWorthSlicing } from "./imageCandidates";
 import { PoseSequenceFitModal } from "./PoseSequenceFitModal";
 
@@ -163,22 +163,33 @@ export class AnimationOptionsModal extends Modal {
 		if (this.options.length > 1 && this.plugin.settings.moodEnabled) this.renderMoodPicker(box, option);
 	}
 
-	/** A row of toggle chips, one per Mood — clicking one adds/removes it from this option's
-	 * restriction list. All off (the default) means "any mood", matching how an omitted/empty
-	 * `moods` field behaves at runtime (see ActionRunner.moodEligible). */
+	/**
+	 * A row of toggle chips, one per Mood, showing the moods this option plays in — lit means it
+	 * plays, clicking one turns it off.
+	 *
+	 * Deliberately the inverse of how the data is stored. An empty `moods` list means "any mood"
+	 * (see ActionRunner.moodEligible), so the honest rendering of a fresh option is *all four lit*,
+	 * not none: four unlit chips read as "nothing is enabled" when the truth is the opposite, and
+	 * the natural next move — clicking one to turn a mood off — did exactly the reverse, silently
+	 * restricting the option to only that mood. Nobody reads a description carefully enough to
+	 * survive a control whose shape says the opposite; the shape had to change. `moodsPlayedIn`
+	 * and `toggleOptionMood` hold the translation, and the stored shape is untouched.
+	 */
 	private renderMoodPicker(box: HTMLElement, option: AnimationOption): void {
-		const setting = new Setting(box).setName("Only in mood").setDesc("Leave all off to allow this option in any mood.");
+		const played = moodsPlayedIn(option.moods);
+		const setting = new Setting(box)
+			.setName("Plays in moods")
+			.setDesc(played.length === MOODS.length ? "Plays in any mood. Click a mood to stop this option playing in it." : `Only plays while ${played.join(", ")}. Click a mood to switch it back on.`);
 		for (const mood of MOODS) {
+			const on = played.includes(mood);
 			setting.addButton((b) => {
 				b.setButtonText(mood[0].toUpperCase() + mood.slice(1))
-					.setTooltip(`Only pick this option while ${mood}`)
+					.setTooltip(on ? `Stop playing this option while ${mood}` : `Play this option while ${mood} again`)
 					.onClick(() => {
-						const i = option.moods.indexOf(mood);
-						if (i === -1) option.moods.push(mood);
-						else option.moods.splice(i, 1);
+						option.moods = toggleOptionMood(option.moods, mood);
 						this.render();
 					});
-				b.buttonEl.toggleClass("shimeji-mood-chip-active", option.moods.includes(mood));
+				b.buttonEl.toggleClass("shimeji-mood-chip-active", on);
 			});
 		}
 	}

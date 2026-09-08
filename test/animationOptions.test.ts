@@ -12,7 +12,7 @@ import { newActionSpec, newPoseSpec, type CustomPoseSpec } from "../src/shimeji/
 import { SHIMEJI_TICK_MS, SHIMEJI_TICKS_PER_SEC } from "../src/shimeji/constants";
 import { createRuntimeContext } from "../src/shimeji/RuntimeContext";
 import type { ActionDef, MascotPack, PoseDef } from "../src/shimeji/types";
-import { buildReplacementActionSpec, deriveAnimatedActions, findReferenceVelocity, poseDefToCustomPoseSpec } from "../src/wizard/animationOptions";
+import { buildReplacementActionSpec, deriveAnimatedActions, findReferenceVelocity, moodsPlayedIn, poseDefToCustomPoseSpec, toggleOptionMood } from "../src/wizard/animationOptions";
 
 const actionsXml = readFileSync(resolve(process.cwd(), "Shimeji/conf/actions.xml"), "utf-8");
 
@@ -54,6 +54,38 @@ describe("poseDefToCustomPoseSpec", () => {
 		expect(customPose.velocityX).toBe(-2);
 		expect(customPose.velocityY).toBe(0);
 		expect(customPose.durationTicks).toBe(6);
+	});
+});
+
+describe("moodsPlayedIn / toggleOptionMood", () => {
+	it("reads a stored empty list as playing in every mood", () => {
+		// The crux of the picker's readability: stored "[]" means any mood, so the honest thing to
+		// show is all four lit, not none.
+		expect(moodsPlayedIn([])).toEqual(["happy", "normal", "bored", "angry"]);
+	});
+
+	it("keeps a restriction in a stable order regardless of how it was clicked together", () => {
+		expect(moodsPlayedIn(["angry", "happy"])).toEqual(["happy", "angry"]);
+	});
+
+	it("turning one off from the default restricts to the other three", () => {
+		expect(toggleOptionMood([], "angry")).toEqual(["happy", "normal", "bored"]);
+	});
+
+	it("turning the last missing one back on normalises to 'any mood' rather than listing all four", () => {
+		// One representation of "plays everywhere" on disk, and it is the same one every pack
+		// written before moods existed already has.
+		expect(toggleOptionMood(["happy", "normal", "bored"], "angry")).toEqual([]);
+	});
+
+	it("round-trips: off then on again is the value it started at", () => {
+		expect(toggleOptionMood(toggleOptionMood([], "bored"), "bored")).toEqual([]);
+	});
+
+	it("refuses to turn off the last remaining mood", () => {
+		// An option playing in no mood would not even fail visibly -- moodEligible's own "never
+		// return an empty pool" fallback would play it anyway, which is worse than refusing.
+		expect(toggleOptionMood(["happy"], "happy")).toEqual(["happy"]);
 	});
 });
 
