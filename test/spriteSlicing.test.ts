@@ -6,6 +6,7 @@ import {
 	compositeOverlay,
 	cropPixels,
 	deriveAnchor,
+	deriveSequenceAnchors,
 	detectFrames,
 	evenBoundaries,
 	flipAnchorHorizontal,
@@ -211,6 +212,100 @@ describe("deriveAnchor", () => {
 	it("falls back to the bottom centre of a frame with nothing in it", () => {
 		const pixels = pixelsFrom(["....", "....", "....", "...."]);
 		expect(deriveAnchor(pixels, { x: 0, y: 0, w: 4, h: 4 })).toEqual({ x: 2, y: 4 });
+	});
+
+	it("does not move when a limb reaches out to one side", () => {
+		// The exact shape of the wobble this rule exists to kill: same character, same feet, one
+		// frame with an arm out. Measuring the whole silhouette's midpoint would read x=6 here
+		// (columns 3..7) against x=4 for the plain standing frame below — and since Mascot draws
+		// at `physics.x - anchor.x`, those two disagreeing by 2px is the body jumping 2px sideways
+		// for exactly the frames where the arm is out.
+		const standing = pixelsFrom([
+			"........",
+			"........",
+			"...##...",
+			"...##...",
+			"...##...",
+			"...##...",
+			"........",
+			"........",
+		]);
+		const armOut = pixelsFrom([
+			"........",
+			"........",
+			"...#####",
+			"...##...",
+			"...##...",
+			"...##...",
+			"........",
+			"........",
+		]);
+		const box = { x: 0, y: 0, w: 8, h: 8 };
+		expect(deriveAnchor(standing, box)).toEqual({ x: 4, y: 6 });
+		expect(deriveAnchor(armOut, box)).toEqual({ x: 4, y: 6 });
+	});
+});
+
+describe("deriveSequenceAnchors", () => {
+	/** Two 8x8 cells side by side. Both hold the same 2-wide body at columns 3..4 of their own
+	 * cell; `rightArm` additionally reaches out to the cell's right edge on its top row. */
+	const twoCells = pixelsFrom([
+		"................",
+		"................",
+		"...##......#####",
+		"...##......##...",
+		"...##......##...",
+		"...##......##...",
+		"................",
+		"................",
+	]);
+	const left = { x: 0, y: 0, w: 8, h: 8 };
+	const right = { x: 8, y: 0, w: 8, h: 8 };
+
+	it("gives every cell of a grid slice one and the same anchor", () => {
+		const anchors = deriveSequenceAnchors(twoCells, [left, right]);
+		expect(anchors).toEqual([
+			{ x: 4, y: 6 },
+			{ x: 4, y: 6 },
+		]);
+	});
+
+	it("keeps a frame that leaves the ground in the air, instead of re-planting it", () => {
+		// Left cell stands with its feet on row 5; the right cell is the same body drawn two rows
+		// higher — a hop. Measured alone the hop would report its own silhouette bottom (y=4) and
+		// land back on the floor; the shared floor is the lowest row *any* frame reaches.
+		const hop = pixelsFrom([
+			"................",
+			"...........##...",
+			"...##......##...",
+			"...##......##...",
+			"...##...........",
+			"...##...........",
+			"................",
+			"................",
+		]);
+		const anchors = deriveSequenceAnchors(hop, [left, right]);
+		expect(anchors.map((a) => a.y)).toEqual([6, 6]);
+		// Measured on its own the hop frame would have claimed the floor was two pixels higher.
+		expect(deriveAnchor(hop, right).y).toBe(4);
+	});
+
+	it("falls back to measuring each frame alone when the rects are not a uniform grid", () => {
+		// Auto-detected blobs: each rect is its own tight bounding box, so there is no shared cell
+		// space a single anchor could even be expressed in. Each frame is measured on its own, and
+		// the two legitimately disagree — a shared value here would be meaningless, not safer.
+		const anchors = deriveSequenceAnchors(twoCells, [
+			{ x: 3, y: 2, w: 2, h: 4 },
+			{ x: 11, y: 2, w: 5, h: 2 },
+		]);
+		expect(anchors).toEqual([
+			{ x: 1, y: 4 },
+			{ x: 1, y: 2 },
+		]);
+	});
+
+	it("plans nothing for an empty selection", () => {
+		expect(deriveSequenceAnchors(twoCells, [])).toEqual([]);
 	});
 });
 
@@ -638,9 +733,33 @@ describe("planPoseSlices", () => {
 		expect(plan.useIndex).toEqual([0, 1]);
 	});
 
-	it("derives each frame's anchor from its own art", () => {
+	it("derives an anchor from the art rather than the middle of the box", () => {
 		const plan = planPoseSlices(sheet, [a]);
 		expect(plan.writes[0].anchor).toEqual({ x: 1, y: 2 });
+	});
+
+	it("gives every frame of a grid selection the same anchor, however the art differs", () => {
+		// The same body drawn a row higher and a column left in cell 2 — a bob, as an animation
+		// would have it. Measured frame by frame the two disagree about where the character stands
+		// (see the assertion at the end), and the mascot would visibly shift for cell 2 and back
+		// again. One anchor over the whole selection is what makes that impossible.
+		const cycle = pixelsFrom([
+			"........",
+			"....##..",
+			".##.##..",
+			".##.....",
+		]);
+		const cell1 = { x: 0, y: 0, w: 4, h: 4 };
+		const cell2 = { x: 4, y: 0, w: 4, h: 4 };
+		const plan = planPoseSlices(cycle, [cell1, cell2, cell1]);
+
+		expect(plan.writes).toHaveLength(2);
+		expect(plan.writes.map((w) => w.anchor)).toEqual([
+			{ x: 2, y: 4 },
+			{ x: 2, y: 4 },
+		]);
+		// What cell 2 would have been given on its own — a different point in both axes.
+		expect(deriveAnchor(cycle, cell2)).toEqual({ x: 1, y: 3 });
 	});
 
 	it("plans nothing for an empty selection", () => {

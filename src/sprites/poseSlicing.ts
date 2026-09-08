@@ -1,5 +1,5 @@
 import { newSpecId, type CustomPoseSpec } from "../shimeji/customContent";
-import { deriveAnchor, sameRect, type FrameRect, type Pixels } from "./pixels";
+import { deriveSequenceAnchors, sameRect, type FrameRect, type Pixels } from "./pixels";
 
 /**
  * Turning a slicer selection into poses.
@@ -31,19 +31,24 @@ export interface PoseSlicePlan {
  * image every time, so it is written once and pointed at twice. Without the deduplication a
  * six-pose ping-pong cycle would leave four identical PNGs in the pack folder, and editing the
  * pose later would mean editing whichever copies happened to share it.
+ *
+ * Anchors come from `deriveSequenceAnchors` over the whole selection rather than frame by frame:
+ * where the character stands is a property of the animation, not of whichever frame is being
+ * written at the time. See its own comment for why measuring one frame alone cannot work.
  */
 export function planPoseSlices(pixels: Pixels, rects: FrameRect[]): PoseSlicePlan {
+	const anchors = deriveSequenceAnchors(pixels, rects);
 	const writes: PlannedWrite[] = [];
 	const useIndex: number[] = [];
-	for (const rect of rects) {
+	rects.forEach((rect, i) => {
 		const existing = writes.findIndex((w) => sameRect(w.rect, rect));
 		if (existing >= 0) {
 			useIndex.push(existing);
-			continue;
+			return;
 		}
-		writes.push({ rect, anchor: deriveAnchor(pixels, rect) });
+		writes.push({ rect, anchor: anchors[i] });
 		useIndex.push(writes.length - 1);
-	}
+	});
 	return { writes, useIndex };
 }
 

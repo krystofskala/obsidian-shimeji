@@ -241,7 +241,75 @@ export function detectFrames(pixels: Pixels, options: DetectFramesOptions): Fram
 }
 
 /**
- * Where a frame's anchor goes: the horizontal centre of its opaque pixels, at the bottom of them.
+ * How much of a silhouette, measured up from its lowest opaque row, counts as the "base" that
+ * `anchorFromMask` centres on.
+ *
+ * The anchor is a point on the *ground*, not a landmark on the body — there is deliberately no
+ * attempt to find a heel or a toe, because every such landmark moves during the very animations
+ * this has to stay still through. What it wants to track is whatever carries the character's
+ * weight: both feet of a biped mid-stride, the bottom of a blob, a tail tip. A quarter of the
+ * height takes those in while excluding the head, arms and cape whose swing is exactly what used
+ * to drag a whole-silhouette midpoint sideways from one frame to the next.
+ */
+const BASE_BAND_FRACTION = 0.25;
+
+/** One frame's opaque/transparent shape, in that frame's own coordinate space. Separated out from
+ * the pixels it came from because it is the thing anchor derivation actually reasons about, and —
+ * unlike RGBA — two frames' masks can be meaningfully merged (see `unionMasks`). */
+export interface FrameMask {
+	/** 1 where the frame is opaque enough to count, 0 elsewhere. Row-major, `width` per row. */
+	opaque: Uint8Array;
+	width: number;
+	height: number;
+}
+
+/** Reads one crop box out of a sheet as a mask in the crop's own coordinates. A box running off the
+ * sheet keeps its requested size with the outside left transparent, the same way `cropPixels`
+ * clips rather than wraps. */
+export function frameMask(pixels: Pixels, rect: FrameRect): FrameMask {
+	const width = Math.max(0, Math.floor(rect.w));
+	const height = Math.max(0, Math.floor(rect.h));
+	const opaque = new Uint8Array(width * height);
+
+	const x0 = Math.max(0, rect.x);
+	const y0 = Math.max(0, rect.y);
+	const x1 = Math.min(pixels.width, rect.x + width);
+	const y1 = Math.min(pixels.height, rect.y + height);
+
+	for (let y = y0; y < y1; y++) {
+		for (let x = x0; x < x1; x++) {
+			if (pixels.data[(y * pixels.width + x) * 4 + 3] < OPAQUE_ALPHA_MIN) continue;
+			opaque[(y - rect.y) * width + (x - rect.x)] = 1;
+		}
+	}
+	return { opaque, width, height };
+}
+
+/**
+ * Every pixel any frame of a sequence ever paints, as one mask.
+ *
+ * Only meaningful for frames that share a coordinate space — a grid slice, where every cell is the
+ * same size and the artist positioned the art *within* the cell. That is precisely the case where
+ * the union is the right thing to measure an anchor from: it spans the character's whole motion
+ * envelope, so the point derived from it is a fixed spot on the ground that every frame is drawn
+ * around, rather than a per-frame reading that moves with the art.
+ */
+export function unionMasks(masks: FrameMask[]): FrameMask {
+	const width = Math.max(0, ...masks.map((m) => m.width));
+	const height = Math.max(0, ...masks.map((m) => m.height));
+	const opaque = new Uint8Array(width * height);
+	for (const mask of masks) {
+		for (let y = 0; y < mask.height; y++) {
+			for (let x = 0; x < mask.width; x++) {
+				if (mask.opaque[y * mask.width + x]) opaque[y * width + x] = 1;
+			}
+		}
+	}
+	return { opaque, width, height };
+}
+
+/**
+ * Where a silhouette's anchor goes: the horizontal centre of its base, at the bottom of it.
  *
  * This has no counterpart in shimeji-buddy — it scaled every clip against the character's tallest
  * frame and positioned by its own rules, so it never needed to know where a sprite's feet were. A
@@ -250,38 +318,99 @@ export function detectFrames(pixels: Pixels, options: DetectFramesOptions): Fram
  *
  * Measuring the silhouette rather than assuming the middle of the box matters for a grid cell with
  * slack around the art: the sprite is rarely centred in its cell, and taking `w/2, h` would leave
- * the mascot hovering above the floor and drifting sideways as poses change. A fully transparent
- * frame has no silhouette to measure, and falls back to the bottom centre of the box.
+ * the mascot hovering above the floor. But measuring the *whole* silhouette's midpoint was its own
+ * bug, and the one this rule exists to fix: an outstretched arm or a flared cape widens the
+ * bounding box on one side, which moves its midpoint, which — since `Mascot`'s own draw pins the
+ * anchor to the mascot's world position (`left = physics.x - anchor.x`) — slides the entire body
+ * the other way for exactly the frames where the limb is out. That is the visible "steps sideways
+ * for a frame and comes back" wobble. Averaging over the base band instead ignores everything
+ * doing the swinging. A fully transparent frame has no silhouette to measure, and falls back to
+ * the bottom centre of the box.
  *
  * Returned relative to the frame's own top-left corner, which is what `ImageAnchor` means.
  */
-export function deriveAnchor(pixels: Pixels, rect: FrameRect): { x: number; y: number } {
-	const { data, width } = pixels;
-	let minX = Infinity;
-	let maxX = -Infinity;
-	let maxY = -Infinity;
+export function anchorFromMask(mask: FrameMask): AnchorPoint {
+	const { opaque, width, height } = mask;
 
-	const x0 = Math.max(0, rect.x);
-	const y0 = Math.max(0, rect.y);
-	const x1 = Math.min(pixels.width, rect.x + rect.w);
-	const y1 = Math.min(pixels.height, rect.y + rect.h);
+	let minY = -1;
+	let maxY = -1;
+	for (let y = 0; y < height; y++) {
+		let rowHasArt = false;
+		for (let x = 0; x < width; x++) {
+			if (opaque[y * width + x]) {
+				rowHasArt = true;
+				break;
+			}
+		}
+		if (!rowHasArt) continue;
+		if (minY < 0) minY = y;
+		maxY = y;
+	}
+	if (maxY < 0) return { x: Math.round(width / 2), y: height };
 
-	for (let y = y0; y < y1; y++) {
-		for (let x = x0; x < x1; x++) {
-			if (data[(y * width + x) * 4 + 3] < OPAQUE_ALPHA_MIN) continue;
-			if (x < minX) minX = x;
-			if (x > maxX) maxX = x;
-			if (y > maxY) maxY = y;
+	const bandRows = Math.max(1, Math.ceil((maxY - minY + 1) * BASE_BAND_FRACTION));
+	const bandTop = Math.max(minY, maxY - bandRows + 1);
+	// A mean rather than the midpoint of the band's own min/max: one stray pixel at the end of a
+	// scarf that happens to dip into the band would drag a midpoint the full distance, where it
+	// barely moves an average taken over every opaque pixel down there.
+	let sum = 0;
+	let count = 0;
+	for (let y = bandTop; y <= maxY; y++) {
+		for (let x = 0; x < width; x++) {
+			if (!opaque[y * width + x]) continue;
+			sum += x;
+			count++;
 		}
 	}
 
-	if (maxY < 0) return { x: Math.round(rect.w / 2), y: rect.h };
 	return {
-		x: Math.round((minX + maxX + 1) / 2) - rect.x,
+		x: Math.round(sum / count),
 		// The anchor sits on the floor, so it is the bottom *edge* of the lowest opaque row, not
 		// that row's own index — one pixel lower.
-		y: maxY + 1 - rect.y,
+		y: maxY + 1,
 	};
+}
+
+/** One frame's anchor, measured from its own art alone. The sequence-aware
+ * `deriveSequenceAnchors` is what slicing actually uses; this stays the single-frame case, for a
+ * caller that genuinely has one frame and no sequence to relate it to. */
+export function deriveAnchor(pixels: Pixels, rect: FrameRect): AnchorPoint {
+	return anchorFromMask(frameMask(pixels, rect));
+}
+
+/**
+ * Anchors for a whole sliced sequence at once — the thing that actually keeps a custom animation
+ * from wandering.
+ *
+ * Deriving each frame's anchor from that frame's own art, however carefully, cannot work: the
+ * anchor is supposed to be a fixed point on the ground, and any rule read off one frame in
+ * isolation is a function of what that frame happens to contain. Two frames of the same character
+ * that differ only in where an arm is will disagree about where the ground is, and the mascot
+ * visibly steps sideways for the frames where they disagree.
+ *
+ * So the sequence decides, not the frame:
+ *
+ * - **Uniform cells** (a grid slice — every rect the same size, which is how a sheet drawn on a
+ *   consistent grid comes out): one anchor, measured from the union of every frame's silhouette,
+ *   handed to all of them. Wobble is then impossible by construction rather than merely unlikely —
+ *   identical anchors over identical cell sizes means the only frame-to-frame differences left are
+ *   the ones the artist actually drew. It also means a frame where the character leaves the ground
+ *   keeps its air: the shared floor comes from the lowest row *any* frame reaches, so a jump pose
+ *   is no longer re-planted on the floor by its own shorter silhouette.
+ * - **Mismatched rects** (auto-detected blobs, or grid lines dragged to different widths): there is
+ *   no shared cell space to put one anchor in, so each frame is measured on its own — but on the
+ *   base band, which at least does not move when the parts of the character that swing swing. This
+ *   is the branch registration would improve on, by aligning the frames against each other rather
+ *   than measuring each one separately.
+ */
+export function deriveSequenceAnchors(pixels: Pixels, rects: FrameRect[]): AnchorPoint[] {
+	if (rects.length === 0) return [];
+	const masks = rects.map((rect) => frameMask(pixels, rect));
+	const [first] = masks;
+	const uniform = masks.every((m) => m.width === first.width && m.height === first.height);
+	if (!uniform) return masks.map(anchorFromMask);
+	const shared = anchorFromMask(unionMasks(masks));
+	return masks.map(() => shared);
 }
 
 /** Evenly divides a length into `count` boundaries, inclusive of both ends — the slicer's starting

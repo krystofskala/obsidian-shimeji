@@ -93,6 +93,23 @@ const MAX_UPSCALE = 8;
 const CHECKER_SIZE = 8;
 
 /**
+ * The neighbouring frames drawn under the current one, lined up on their anchors.
+ *
+ * Two colours rather than one so "the frame before" and "the frame after" stay tellable apart when
+ * both are on screen, and neither is the anchor crosshair's own red. Drawn as flat silhouettes at
+ * `GHOST_ALPHA` rather than the real art faded out: what has to be compared here is two outlines,
+ * and two translucent drawings of the same character overlap into something readable as neither.
+ */
+const GHOST_PREV_COLOR = "#4db8ff";
+const GHOST_NEXT_COLOR = "#ffb14d";
+const GHOST_ALPHA = 0.45;
+
+/** Behind the frame's own checkerboard, filling the margin the ghosts can reach into. Distinct
+ * from both checker shades so the frame's real edges stay visible inside it — a ghost sticking out
+ * past them is the signal that this frame needs "Expand space", not a drawing glitch. */
+const GHOST_MARGIN_COLOR = "#1b1b1b";
+
+/**
  * Walks through a batch of just-sliced animation frames one at a time — resize them all to match
  * the rest of the character, then per frame: flip, rotate, drag the anchor to the feet, and
  * optionally place another image on top — before they become part of an action's animation. Exists
@@ -110,6 +127,20 @@ const CHECKER_SIZE = 8;
  * size-agnostic pixel functions (`flipHorizontal`/`flipVertical`/`rotate90Clockwise`/
  * `rotate90CounterClockwise`/`compositeOverlay` and their anchor-transform counterparts, all from
  * `pixels.ts`) that both editors share.
+ *
+ * **Anchors** are what keeps a finished animation from wandering, and the hard part of getting one
+ * right is that a frame cannot be judged on its own. The engine draws every pose at
+ * `physics.x - anchor.x` (see `Mascot`), so two frames whose anchors disagree about where the
+ * ground is make the mascot step sideways and back for exactly the frames that disagree — the
+ * anchor is a point on the *floor*, not a landmark on the character, and there is deliberately no
+ * body part to aim it at, since every candidate (a heel, a toe) is itself moving during the
+ * animation that has to hold still. `deriveSequenceAnchors` gives a fresh slice a coherent set to
+ * start from; what this modal adds is the ability to see the result, by drawing the neighbouring
+ * frames underneath the current one with their anchors on its anchor. Bodies that do not line up
+ * are then simply visible, and the fix is to drag until they do. Note that the anchor *numbers*
+ * are not comparable between frames at all — differently-sized cutouts measure from their own
+ * top-left corners — which is why this shows the art rather than, say, the previous frame's
+ * crosshair.
  *
  * **Layers** ("Add image on top…") place one extra image over the current frame — a particle
  * effect over a couple of frames of a jump, for instance — positioned by dragging, then flattened
@@ -137,6 +168,16 @@ export class PoseSequenceFitModal extends Modal {
 	private dragging = false;
 	private overlayDragStart?: { clientX: number; clientY: number; offsetX: number; offsetY: number };
 	private anchorLabelEl?: HTMLElement;
+	/** Where this frame's own top-left corner sits on the canvas, in frame pixels. Non-zero
+	 * whenever a ghost reaches further left/up than the frame does, since the canvas has to cover
+	 * both — every draw and every pointer reading goes through it. See `canvasBounds`. */
+	private padX = 0;
+	private padY = 0;
+	private showGhosts = true;
+	/** Tinted silhouettes, keyed on the source canvas — which is replaced outright whenever a
+	 * frame's pixels change (flip, rotate, resize, placed layer), so the cache invalidates itself
+	 * instead of every one of those call sites having to remember to clear it. */
+	private ghostTints = new WeakMap<HTMLCanvasElement, Map<string, HTMLCanvasElement>>();
 
 	constructor(app: App, private opts: PoseSequenceFitModalOptions) {
 		super(app);
@@ -276,7 +317,9 @@ export class PoseSequenceFitModal extends Modal {
 			cls: "setting-item-description",
 			text: frame.pendingOverlay
 				? "Drag to position this layer over the frame, flip/rotate it if it needs orienting, then place it."
-				: "Flip or rotate if this frame came out facing the wrong way, and click or drag on the image to move the anchor to its feet — where this pose plants against the ground.",
+				: total > 1
+					? "Flip or rotate if this frame came out facing the wrong way, then click or drag to move the anchor — the point this pose plants against the ground. The neighbouring frames are drawn underneath, lined up on their anchors: line the body up with them, not any one part of it."
+					: "Flip or rotate if this frame came out facing the wrong way, and click or drag on the image to move the anchor to its feet — where this pose plants against the ground.",
 		});
 
 		const wrap = contentEl.createDiv({ cls: "shimeji-poseseq" });
@@ -297,6 +340,21 @@ export class PoseSequenceFitModal extends Modal {
 		} else {
 			this.anchorLabelEl = contentEl.createEl("p", { cls: "setting-item-description" });
 			this.refreshAnchorLabel();
+		}
+
+		if (!frame.pendingOverlay && total > 1) {
+			new Setting(contentEl)
+				.setName("Show neighbouring frames")
+				.setDesc(
+					"Draws the frame before (blue) and after (amber) underneath this one, with their anchors on this one's — exactly how the engine will stack them. Match where the body sits, not the anchor numbers, which mean different things in differently-sized cutouts.",
+				)
+				.addToggle((t) =>
+					t.setValue(this.showGhosts).onChange((v) => {
+						this.showGhosts = v;
+						this.resizeCanvas();
+						this.redraw();
+					}),
+				);
 		}
 
 		new Setting(contentEl)
@@ -604,11 +662,87 @@ export class PoseSequenceFitModal extends Modal {
 
 	// ---------------------------------------------------------------- drawing
 
-	private resizeCanvas(): void {
+	/**
+	 * The neighbouring frames drawn under the current one, and the colour each gets.
+	 *
+	 * Nothing while a layer is being placed: a pending overlay is already a second image on the
+	 * canvas being positioned by hand, and ghosts under it would compete with the exact thing the
+	 * user is looking at.
+	 */
+	private ghostFrames(): { frame: FrameState; color: string }[] {
+		if (!this.showGhosts || this.frames[this.index].pendingOverlay) return [];
+		const out: { frame: FrameState; color: string }[] = [];
+		const prev = this.frames[this.index - 1];
+		const next = this.frames[this.index + 1];
+		if (prev) out.push({ frame: prev, color: GHOST_PREV_COLOR });
+		if (next) out.push({ frame: next, color: GHOST_NEXT_COLOR });
+		return out;
+	}
+
+	/**
+	 * How much room the canvas needs, in this frame's own pixels, to hold the frame *and* every
+	 * ghost lined up on it.
+	 *
+	 * A ghost is drawn with its anchor on this frame's anchor, so its position depends on where
+	 * this frame's anchor currently is — which moves while the anchor is being dragged. Sizing to
+	 * that directly would resize the canvas under the cursor mid-drag. So this takes the extremes
+	 * instead: `moveAnchorTo` clamps the anchor to `0..width-1`, so a ghost can never reach
+	 * further left than `-ghost.anchorX` (anchor at 0) nor further right than
+	 * `width - 1 - ghost.anchorX + ghost.width` (anchor at the far edge). The box is computed once
+	 * per frame, holds for every anchor position, and never clips.
+	 */
+	private canvasBounds(): { minX: number; minY: number; maxX: number; maxY: number } {
 		const { width, height } = this.frames[this.index].pixels;
+		let minX = 0;
+		let minY = 0;
+		let maxX = width;
+		let maxY = height;
+		for (const { frame: ghost } of this.ghostFrames()) {
+			minX = Math.min(minX, -ghost.pose.anchorX);
+			minY = Math.min(minY, -ghost.pose.anchorY);
+			maxX = Math.max(maxX, width - 1 - ghost.pose.anchorX + ghost.pixels.width);
+			maxY = Math.max(maxY, height - 1 - ghost.pose.anchorY + ghost.pixels.height);
+		}
+		return { minX, minY, maxX, maxY };
+	}
+
+	private resizeCanvas(): void {
+		const { minX, minY, maxX, maxY } = this.canvasBounds();
+		this.padX = -minX;
+		this.padY = -minY;
+		const width = maxX - minX;
+		const height = maxY - minY;
+		// Scaled against the padded box rather than the frame alone, so turning ghosts on widens
+		// what is shown without pushing the modal past MAX_DISPLAY.
 		this.scale = Math.min(MAX_UPSCALE, MAX_DISPLAY / Math.max(width, height, 1));
 		this.canvas.width = Math.max(1, Math.round(width * this.scale));
 		this.canvas.height = Math.max(1, Math.round(height * this.scale));
+	}
+
+	/** A flat silhouette of `frame` in `color`. See `ghostTints` for why the cache is safe. */
+	private tintedGhost(frame: FrameState, color: string): HTMLCanvasElement {
+		let byColor = this.ghostTints.get(frame.canvasEl);
+		if (!byColor) {
+			byColor = new Map();
+			this.ghostTints.set(frame.canvasEl, byColor);
+		}
+		const cached = byColor.get(color);
+		if (cached) return cached;
+
+		const tinted = document.createElement("canvas");
+		tinted.width = Math.max(1, frame.pixels.width);
+		tinted.height = Math.max(1, frame.pixels.height);
+		const ctx = tinted.getContext("2d");
+		if (ctx) {
+			ctx.imageSmoothingEnabled = false;
+			ctx.drawImage(frame.canvasEl, 0, 0);
+			// Keeps the alpha just drawn and replaces every colour under it with the tint.
+			ctx.globalCompositeOperation = "source-in";
+			ctx.fillStyle = color;
+			ctx.fillRect(0, 0, tinted.width, tinted.height);
+		}
+		byColor.set(color, tinted);
+		return tinted;
 	}
 
 	private redraw(): void {
@@ -617,11 +751,44 @@ export class PoseSequenceFitModal extends Modal {
 		const s = this.scale;
 		this.ctx.imageSmoothingEnabled = false;
 		this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+		this.ctx.fillStyle = GHOST_MARGIN_COLOR;
+		this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 		this.drawCheckerboard(width, height, s);
-		this.ctx.drawImage(frame.canvasEl, 0, 0, width, height, 0, 0, width * s, height * s);
+
+		// Under the real frame, so the frame being edited always reads as the solid one on top.
+		for (const { frame: ghost, color } of this.ghostFrames()) {
+			// The whole point of the overlay: the ghost's own anchor is placed on this frame's
+			// anchor, which is exactly what the engine does with both of them at runtime. What the
+			// user then sees is where the *body* moves between the two frames — no landmark to
+			// find, and no meaning attached to the raw anchor coordinates, which are not comparable
+			// across differently-sized cutouts in the first place.
+			const originX = frame.pose.anchorX - ghost.pose.anchorX;
+			const originY = frame.pose.anchorY - ghost.pose.anchorY;
+			this.ctx.globalAlpha = GHOST_ALPHA;
+			this.ctx.drawImage(
+				this.tintedGhost(ghost, color),
+				(this.padX + originX) * s,
+				(this.padY + originY) * s,
+				ghost.pixels.width * s,
+				ghost.pixels.height * s,
+			);
+			this.ctx.globalAlpha = 1;
+		}
+
+		this.ctx.drawImage(frame.canvasEl, 0, 0, width, height, this.padX * s, this.padY * s, width * s, height * s);
 		if (frame.pendingOverlay) {
 			const o = frame.pendingOverlay;
-			this.ctx.drawImage(o.canvasEl, 0, 0, o.pixels.width, o.pixels.height, o.offsetX * s, o.offsetY * s, o.pixels.width * o.scale * s, o.pixels.height * o.scale * s);
+			this.ctx.drawImage(
+				o.canvasEl,
+				0,
+				0,
+				o.pixels.width,
+				o.pixels.height,
+				(this.padX + o.offsetX) * s,
+				(this.padY + o.offsetY) * s,
+				o.pixels.width * o.scale * s,
+				o.pixels.height * o.scale * s,
+			);
 		}
 		this.drawAnchor();
 	}
@@ -634,7 +801,7 @@ export class PoseSequenceFitModal extends Modal {
 				this.ctx.fillStyle = (x + y) % 2 === 0 ? light : dark;
 				const w = Math.min(CHECKER_SIZE, width - x * CHECKER_SIZE) * s;
 				const h = Math.min(CHECKER_SIZE, height - y * CHECKER_SIZE) * s;
-				this.ctx.fillRect(x * CHECKER_SIZE * s, y * CHECKER_SIZE * s, w, h);
+				this.ctx.fillRect((this.padX + x * CHECKER_SIZE) * s, (this.padY + y * CHECKER_SIZE) * s, w, h);
 			}
 		}
 	}
@@ -642,8 +809,8 @@ export class PoseSequenceFitModal extends Modal {
 	private drawAnchor(): void {
 		const frame = this.frames[this.index];
 		const s = this.scale;
-		const x = frame.pose.anchorX * s;
-		const y = frame.pose.anchorY * s;
+		const x = (this.padX + frame.pose.anchorX) * s;
+		const y = (this.padY + frame.pose.anchorY) * s;
 		const radius = 5;
 		this.ctx.strokeStyle = "#ff5f5f";
 		this.ctx.lineWidth = 2;
@@ -674,8 +841,8 @@ export class PoseSequenceFitModal extends Modal {
 		const scaleX = rect.width > 0 ? this.canvas.width / rect.width : 1;
 		const scaleY = rect.height > 0 ? this.canvas.height / rect.height : 1;
 		return {
-			x: ((e.clientX - rect.left) * scaleX) / this.scale,
-			y: ((e.clientY - rect.top) * scaleY) / this.scale,
+			x: ((e.clientX - rect.left) * scaleX) / this.scale - this.padX,
+			y: ((e.clientY - rect.top) * scaleY) / this.scale - this.padY,
 		};
 	}
 
