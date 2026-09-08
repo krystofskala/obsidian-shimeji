@@ -48,6 +48,8 @@ function makeFakeMascot() {
 
 const AMBIENT = { x: 0, y: 0, dx: 0, dy: 0 };
 
+const floorAt = (y: number) => ({ kind: "floor" as const, y, x1: -1000, x2: 1000, source: "window" as const });
+
 function action(partial: Partial<ActionDef> & { name: string; animations?: AnimationVariant[] }): ActionDef {
 	return {
 		type: "Stay",
@@ -98,6 +100,73 @@ describe("ActionRunner", () => {
 		expect(runner.tick(env, 0.02, [])).toBe(false);
 		expect(mascot.shownImages).toContain("resolved:/a.png");
 		expect(runner.tick(env, 0.04, [])).toBe(true);
+	});
+
+	describe("a Floor-bordered hold with no Duration", () => {
+		// The exact shape of the bundled pack's own FallFromWall/FallFromCeiling: a one-shot
+		// Sequence that nudges the mascot off the wall and then holds `Stand`, which declares
+		// BorderType="Floor" and carries no Duration at its reference site. Nothing but losing the
+		// floor can end it, so before this it held forever — a mascot standing in a corner for an
+		// hour, and a corner is exactly where coming off a wall leaves one.
+		const pack: MascotPack = {
+			...NOOP_PACK,
+			actions: new Map([["Stand", action({ name: "Stand", type: "Stay", borderType: "Floor", animations: animOf([{ image: "/stand.png", durationMs: 10 }]) })]]),
+		};
+
+		it("ends once it has settled onto the floor, rather than standing there forever", () => {
+			const runner = new ActionRunner(pack);
+			const mascot = makeFakeMascot();
+			// Just left a wall partway up, exactly as FallFromWall's Offset leaves it.
+			mascot.physics.y = 20;
+			mascot.physics.grounded = false;
+			const env = envFor(pack, mascot);
+			runner.start("Stand", env);
+
+			let done = false;
+			for (let i = 0; i < 500 && !done; i++) done = runner.tick(env, 0.016, [floorAt(300)]);
+
+			expect(done).toBe(true);
+			// It still settles all the way down first — the landing is the point, and aborting the
+			// hold mid-air instead would leave the mascot frozen in the air.
+			expect(mascot.physics.y).toBe(300);
+			expect(mascot.physics.grounded).toBe(true);
+		});
+
+		it("keeps holding when it began on solid ground, since nothing was ever wrong with it", () => {
+			const runner = new ActionRunner(pack);
+			const mascot = makeFakeMascot();
+			mascot.physics.y = 300;
+			mascot.physics.grounded = true;
+			const env = envFor(pack, mascot);
+			runner.start("Stand", env);
+
+			for (let i = 0; i < 500; i++) expect(runner.tick(env, 0.016, [floorAt(300)])).toBe(false);
+		});
+	});
+
+	it("does not cut short a Duration-carrying hold that happens to start in mid-air", () => {
+		// The settle rule above must only ever rescue holds that had no other way of ending. A
+		// reference site that named a Duration said how long it wants, airborne start or not.
+		const pack: MascotPack = {
+			...NOOP_PACK,
+			actions: new Map([["Stand", action({ name: "Stand", type: "Stay", borderType: "Floor", animations: animOf([{ image: "/stand.png", durationMs: 10 }]) })]]),
+		};
+		const runner = new ActionRunner(pack);
+		const mascot = makeFakeMascot();
+		mascot.physics.y = 20;
+		mascot.physics.grounded = false;
+		const env = envFor(pack, mascot);
+		runner.start("Stand", env, { Duration: "100" }); // 100 ticks x 40ms = 4s
+
+		let done = false;
+		let elapsedMs = 0;
+		for (let i = 0; i < 500 && !done; i++) {
+			done = runner.tick(env, 0.016, [floorAt(300)]);
+			elapsedMs += 16;
+		}
+		expect(done).toBe(true);
+		expect(mascot.physics.grounded).toBe(true); // landed long before it was allowed to end
+		expect(elapsedMs).toBeGreaterThanOrEqual(4000);
 	});
 
 	it("runs a Sequence's children in order", () => {

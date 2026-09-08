@@ -34,6 +34,11 @@ interface Frame {
 	 * both its real modulo-cycled pose (see pickLoopingPose) and its own completion — see
 	 * tickHold for why this replaced a poseIndex walk. */
 	holdElapsedMs: number;
+	/** tickHold only, and only for a Floor border: whether the mascot was off the ground when this
+	 * hold started. Latched on the hold's first tick rather than at push time, since a frame is
+	 * built before anything has looked at where the mascot actually is. Undefined until then. See
+	 * the settle check at the end of tickHold for what it is for. */
+	holdBeganAirborne?: boolean;
 	instantComplete: boolean;
 	/** Breed only: guards requestSibling so a multi-Pose birth animation spawns exactly one
 	 * sibling on its first tick rather than once per pose frame. */
@@ -659,7 +664,9 @@ export class ActionRunner {
 	 * border has genuinely vanished (not just moved), that's the real engine's
 	 * LostGroundException, caught by BehaviorAI to force Fall (see the lostGround getter). Floor
 	 * border types aren't handled here at all — they re-anchor via stickToFloorIfBordered
-	 * instead, which always finds *some* floor (the window's own, at minimum). */
+	 * instead, which always finds *some* floor (the window's own, at minimum). A Floor-bordered
+	 * *hold* still has its own airborne check, inline in tickHold, for the case re-anchoring
+	 * cannot fix: being in mid-air when the hold starts. */
 	private isBorderLost(borderType: string | undefined, ledges: Ledge[], physics: MascotPhysics): boolean {
 		if (borderType === "Wall") return findClingableWall(ledges, physics, LOST_GROUND_REACH) === undefined;
 		if (borderType === "Ceiling") return findCeilingAt(ledges, physics.x, physics.y, LOST_GROUND_REACH) === undefined;
@@ -702,6 +709,9 @@ export class ActionRunner {
 				return true;
 			}
 		} else {
+			// Whether this hold began in the air, recorded before the gravity step below gets a
+			// chance to land it — see the settle check further down.
+			if (frame.holdBeganAirborne === undefined) frame.holdBeganAirborne = !physics.grounded;
 			this.stickToFloorIfBordered(frame, env, dt, ledges);
 		}
 		this.showPose(env.mascot, pickLoopingPose(poses, frame.holdElapsedMs));
@@ -721,6 +731,23 @@ export class ActionRunner {
 			durationOverride !== undefined ? durationOverride * SHIMEJI_TICK_MS : Infinity,
 			selfCapsAtOneCycle ? totalPoseCycleMs : Infinity,
 		);
+
+		// A Floor-bordered hold that began in mid-air and carries no Duration has exactly one job:
+		// get the mascot back onto the floor. Once it has landed, it is finished — holding on
+		// afterwards means holding *forever*, since effectiveDurationMs above is Infinity and a
+		// Floor border, unlike Wall/Ceiling, never reports lost ground (it re-anchors instead, and
+		// deliberately so — see stickToFloorIfBordered and the settle test that guards it).
+		//
+		// This is the bundled pack's FallFromWall/FallFromCeiling, both a one-shot Sequence of
+		// `Offset` (nudge off the wall) then `<ActionReference Name="Stand" />` with no Duration.
+		// The mascot came off a wall, drifted down, landed — and then stood on that spot
+		// indefinitely, reported from the wild as standing in a corner for an hour, at the window
+		// edge that coming off a wall leaves it at.
+		//
+		// Deliberately narrow. It cannot disturb a hold that declares a Duration (every ordinary
+		// Sit/Stand in a real pack does, typically 20-60s), nor one that began on solid ground, so
+		// the only holds it can end are the ones that had no other way of ending at all.
+		if (frame.action.borderType === "Floor" && frame.holdBeganAirborne && physics.grounded && durationOverride === undefined) return true;
 
 		frame.holdElapsedMs += dt * 1000;
 		return frame.holdElapsedMs >= effectiveDurationMs;
