@@ -147,6 +147,33 @@ function bridgeNarrowGaps(ledges: Ledge[]): Ledge[] {
  */
 const CEILING_APPROACH_PX = 64;
 
+/**
+ * Drops a pane's side wall when it stands so close to a window edge that clinging to it would put
+ * the mascot mostly outside the window.
+ *
+ * Reported from the wild: a theme that insets its panes leaves a sliver between the outermost pane
+ * and the edge of Obsidian. `computeLedgesFromRects` builds a wall for any pane edge that is not
+ * exactly flush (`rect.left > 0`, `rect.right < viewport.width`), so a 3px inset produces a
+ * perfectly ordinary climbable wall with a 3px strip beside it — and a mascot that picks that side
+ * hangs off the window with only those three pixels of itself in view.
+ *
+ * Nothing is lost by removing it: the window's own left/right wall sits within those same few
+ * pixels and is still there, so every climb the strip could have served is still served. What goes
+ * is only the option to do it from outside the frame.
+ *
+ * Half the sprite rather than all of it — the test is "would the mascot still be mostly visible",
+ * not "does it fit exactly", and a strip a whole body wide is a fine place to climb. Width comes
+ * from the mascot's rendered height because shimeji sprite sheets are square by convention (the
+ * vendored pack is 128x128) and no separate width is plumbed this far.
+ */
+export function withoutWallsInUnusableEdgeStrips(ledges: Ledge[], viewportWidth: number, standingWidth: number): Ledge[] {
+	const minStrip = standingWidth / 2;
+	return ledges.filter((ledge) => {
+		if (ledge.kind !== "wall" || ledge.source !== "pane") return true;
+		return ledge.x >= minStrip && ledge.x <= viewportWidth - minStrip;
+	});
+}
+
 export function withoutLedgesTooCloseToTop(ledges: Ledge[], worldTop: number, standingHeight: number): Ledge[] {
 	const minStandableY = worldTop + standingHeight;
 	const minClimbableY = worldTop + Math.min(standingHeight, CEILING_APPROACH_PX);

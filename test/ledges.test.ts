@@ -1,7 +1,53 @@
 import { describe, expect, it } from "vitest";
-import { computeLedgesFromRects, findCeilingAt, findFloorBelow, findNearestFloorAt, findWallAt, nearestPaneRect, withoutLedgesTooCloseToTop } from "../src/engine/Ledges";
+import {
+	computeLedgesFromRects,
+	findCeilingAt,
+	findFloorBelow,
+	findNearestFloorAt,
+	findWallAt,
+	nearestPaneRect,
+	withoutLedgesTooCloseToTop,
+	withoutWallsInUnusableEdgeStrips,
+} from "../src/engine/Ledges";
 
 const PANE_RECT = { left: 100, top: 300, right: 400, bottom: 580 };
+
+describe("withoutWallsInUnusableEdgeStrips", () => {
+	// A theme that insets its panes leaves a sliver between the outermost pane and the edge of
+	// Obsidian. computeLedgesFromRects builds a wall for any pane edge that is not exactly flush,
+	// so that sliver became a perfectly ordinary climbable wall — and a mascot that picked it hung
+	// off the side of the window with only those few pixels of itself in view.
+	const inset = { left: 3, top: 40, right: 797, bottom: 560 };
+	const insetLedges = () => computeLedgesFromRects({ width: 800, height: 600 }, [{ rect: inset, source: "pane" as const }]);
+	const paneWalls = (ledges: ReturnType<typeof insetLedges>) => ledges.filter((l) => l.kind === "wall" && l.source === "pane");
+
+	it("drops both of an inset pane's side walls when the strips beside them are too narrow", () => {
+		expect(paneWalls(withoutWallsInUnusableEdgeStrips(insetLedges(), 800, 128))).toHaveLength(0);
+	});
+
+	it("leaves the window's own walls alone — they are what the strip was standing in for", () => {
+		const kept = withoutWallsInUnusableEdgeStrips(insetLedges(), 800, 128);
+		expect(kept).toContainEqual({ kind: "wall", side: "left", x: 0, y1: 0, y2: 600, source: "window" });
+		expect(kept).toContainEqual({ kind: "wall", side: "right", x: 800, y1: 0, y2: 600, source: "window" });
+	});
+
+	it("keeps a pane wall with real room beside it", () => {
+		const roomy = computeLedgesFromRects({ width: 800, height: 600 }, [{ rect: PANE_RECT, source: "pane" as const }]);
+		expect(paneWalls(withoutWallsInUnusableEdgeStrips(roomy, 800, 128))).toHaveLength(2);
+	});
+
+	it("scales with the mascot: a small enough one can use a strip a big one cannot", () => {
+		const midway = computeLedgesFromRects({ width: 800, height: 600 }, [{ rect: { left: 30, top: 40, right: 770, bottom: 560 }, source: "pane" as const }]);
+		expect(paneWalls(withoutWallsInUnusableEdgeStrips(midway, 800, 128))).toHaveLength(0);
+		expect(paneWalls(withoutWallsInUnusableEdgeStrips(midway, 800, 40))).toHaveLength(2);
+	});
+
+	it("leaves floors and ceilings untouched, however close to an edge they run", () => {
+		const kept = withoutWallsInUnusableEdgeStrips(insetLedges(), 800, 128);
+		expect(kept.some((l) => l.kind === "floor" && l.source === "pane")).toBe(true);
+		expect(kept.some((l) => l.kind === "ceiling" && l.source === "pane")).toBe(true);
+	});
+});
 
 describe("computeLedgesFromRects", () => {
 	it("always includes the four window edges", () => {
