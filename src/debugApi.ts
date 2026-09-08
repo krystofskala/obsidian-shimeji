@@ -1,4 +1,6 @@
 import { setVerboseLogging } from "./engine/debugLog";
+import { lapCorners } from "./engine/laps";
+import { minClimbableY } from "./engine/Ledges";
 import { ANGER_DECAY_PER_SECOND, ANGER_THRESHOLD } from "./engine/mood";
 import { describeSurface } from "./engine/MovementAudit";
 import type { PaneActions } from "./engine/PaneActions";
@@ -44,6 +46,7 @@ export interface ShimejiDebugApi {
 	where(): void;
 	watch(seconds?: number): void;
 	explainOrder(x: number, y: number): void;
+	explainLap(): void;
 	room(): void;
 	roomHour(hour?: number): void;
 	speech(): void;
@@ -190,6 +193,45 @@ export function installDebugApi(
 		 * window is over a minute of barely-visible movement. This turns "it does nothing" into a
 		 * reason.
 		 */
+		/**
+		 * The four corners a lap aims at, whether each is actually reachable, and where the walls
+		 * it would have to climb really start.
+		 *
+		 * Exists because "it gets stuck in the top corner" has now been diagnosed wrong twice from
+		 * the outside. A corner above the top of every wall and a corner the router simply declines
+		 * to plan for look identical from the sofa; this says which, and the wall listing at the end
+		 * says whether the climb even reaches that high.
+		 */
+		explainLap() {
+			const stage = getStage();
+			const mascot = stage?.getMascots()[0];
+			if (!stage || !mascot) {
+				console.info("[obsidian-shimeji] no mascot");
+				return;
+			}
+			const ledges = stage.getLedges();
+			const viewport = mascot.getViewportSize();
+			const worldTop = stage.getWorldTop();
+			const standing = mascot.height * mascot.scale;
+			const corners = lapCorners({ left: 0, right: viewport.width, top: minClimbableY(worldTop, standing), bottom: viewport.height });
+			const from = { x: mascot.physics.x, y: mascot.physics.y };
+			const attached = mascot.physics.currentFloor ?? mascot.physics.currentWall ?? mascot.physics.currentCeiling;
+			const opts = { arriveWithin: 40, travelTimeWeight: 0.05 };
+
+			console.info(`[obsidian-shimeji] lap for a ${Math.round(standing)}px mascot — window ${viewport.width}x${viewport.height}, worldTop ${Math.round(worldTop)}`);
+			console.info(`  mascot at (${Math.round(from.x)}, ${Math.round(from.y)}) on ${describeSurface(mascot.physics)}`);
+			corners.forEach((corner, i) => {
+				// Each planned from where the mascot is *now*, not from the previous corner, so
+				// treat a later corner's miss as a hint rather than a verdict.
+				const route = findRoute(ledges, from, corner, attached, opts);
+				const end = route.length > 0 ? route[route.length - 1] : from;
+				const miss = Math.round(Math.hypot(end.x - corner.x, end.y - corner.y));
+				const via = route.map((s) => s.via).join(" -> ") || "none";
+				console.info(`  corner ${i} (${Math.round(corner.x)}, ${Math.round(corner.y)}): [${via}] ends (${Math.round(end.x)}, ${Math.round(end.y)}), ${miss}px short${miss <= 40 ? "" : "   <-- UNREACHABLE"}`);
+			});
+			const walls = ledges.filter((l): l is Extract<typeof l, { kind: "wall" }> => l.kind === "wall");
+			console.info(`  walls (${walls.length}): ${walls.map((w) => `${w.side}@${Math.round(w.x)} y${Math.round(w.y1)}..${Math.round(w.y2)} ${w.source}`).join(" | ") || "none"}`);
+		},
 		explainOrder(x, y) {
 			const stage = getStage();
 			const mascot = stage?.getMascots()[0];
