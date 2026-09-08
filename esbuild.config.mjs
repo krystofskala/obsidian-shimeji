@@ -1,8 +1,46 @@
 import esbuild from "esbuild";
 import process from "process";
+import fs from "node:fs";
+import path from "node:path";
 import builtins from "builtin-modules";
 
 const production = process.argv[2] === "production";
+
+/** Per-machine target: the real Obsidian vault's plugin folder to copy build output into after
+ * every build, so `npm run dev`/`npm run build` alone is "live" — no manual copy step, and no
+ * Obsidian-Sync-visible junction/symlink sitting inside the vault pointing back at this whole dev
+ * repo (node_modules, .git, and all). Deliberately a local, gitignored file rather than an
+ * argument or a hardcoded path: this repo runs on more than one machine (e.g. a work PC and a
+ * home PC sharing the same synced vault under different absolute paths), and the target has no
+ * reason to be the same path twice, let alone committed. Missing file (nothing configured yet, or
+ * a machine — like this one — with no real vault at all) just skips the copy silently. */
+const vaultPluginDir = (() => {
+	const configPath = path.join(process.cwd(), "vault-plugin-path.local.txt");
+	if (!fs.existsSync(configPath)) return undefined;
+	const configured = fs.readFileSync(configPath, "utf8").trim();
+	return configured || undefined;
+})();
+
+/** Copies every build output file that currently exists in the repo root into vaultPluginDir,
+ * creating it if needed. Attached to both contexts below so either one's rebuild (main.ts changed,
+ * or just vaultSearchRuntime.ts) re-syncs everything — copying the other, unchanged file again is
+ * harmless and keeps this simple rather than tracking which output belongs to which context. */
+function copyToVaultPlugin() {
+	return {
+		name: "copy-to-vault",
+		setup(build) {
+			build.onEnd((result) => {
+				if (!vaultPluginDir || result.errors.length > 0) return;
+				fs.mkdirSync(vaultPluginDir, { recursive: true });
+				for (const fileName of ["main.js", "manifest.json", "styles.css", "vault-search.js"]) {
+					const source = path.join(process.cwd(), fileName);
+					if (fs.existsSync(source)) fs.copyFileSync(source, path.join(vaultPluginDir, fileName));
+				}
+				console.log(`[copy-to-vault] synced to ${vaultPluginDir}`);
+			});
+		},
+	};
+}
 
 const codemirrorExternal = [
 	"@codemirror/autocomplete",
@@ -65,6 +103,7 @@ const mainContext = await esbuild.context({
 	external: ["obsidian", "electron", ...codemirrorExternal, ...builtins],
 	define: browserProcessDefine,
 	outfile: "main.js",
+	plugins: [copyToVaultPlugin()],
 });
 
 // A second, independent bundle: the one place `@huggingface/transformers` (and the onnxruntime-web
@@ -83,6 +122,7 @@ const vaultSearchContext = await esbuild.context({
 	external: ["onnxruntime-node", "sharp", ...builtins],
 	define: browserProcessDefine,
 	outfile: "vault-search.js",
+	plugins: [copyToVaultPlugin()],
 });
 
 if (production) {
