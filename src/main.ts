@@ -1212,17 +1212,28 @@ export default class ShimejiPlugin extends Plugin {
 		return `${this.roomFolder()}/onnx-wasm/${fileName}`;
 	}
 
-	/** Absolute on-disk path to `vault-search.js` — the separately-bundled file that actually
-	 * contains `@huggingface/transformers` (see esbuild.config.mjs and embeddings.ts's own top
-	 * comment for why this has to be loaded this way, rather than main.ts's own bundle just
-	 * importing the package by name). A dynamic `import()` of a real filesystem path, not a
-	 * package specifier, needs a real on-disk vault; the only caller (applyVaultSearchEnabled)
-	 * already gates on Platform.isMobile, so the adapter is always a FileSystemAdapter here. */
+	/**
+	 * Loads `vault-search.js` — the separately-bundled file that actually contains
+	 * `@huggingface/transformers` (see esbuild.config.mjs and embeddings.ts's own top comment for
+	 * why it cannot simply be imported by package name from main's own bundle).
+	 *
+	 * Through `getResourcePath`, which is what makes it loadable at all. This used to import the
+	 * bare absolute filesystem path from `getBasePath()`; Electron resolves such a specifier to a
+	 * `file://` URL, and Obsidian refuses those outright — "Not allowed to load local resource",
+	 * followed by a `Failed to fetch dynamically imported module` for every embedding the index
+	 * then tried to make. On one vault that was 5959 console errors from a single rebuild, since a
+	 * rebuild embeds every chunk of every note. `getResourcePath` hands back an `app://` URL
+	 * instead, the same scheme the onnx wasm assets beside this already load through and the same
+	 * one pack images use.
+	 *
+	 * The on-disk guard stays: the file has to genuinely exist next to the plugin, and the only
+	 * caller (applyVaultSearchEnabled) already gates on Platform.isMobile.
+	 */
 	private loadVaultSearchRuntime(): Promise<typeof Transformers> {
 		if (!(this.app.vault.adapter instanceof FileSystemAdapter)) {
 			throw new Error("Vault search needs a real on-disk vault to load its runtime.");
 		}
-		return import(`${this.app.vault.adapter.getBasePath()}/${this.roomFolder()}/vault-search.js`);
+		return import(this.app.vault.adapter.getResourcePath(`${this.roomFolder()}/vault-search.js`));
 	}
 
 	/** Which of a room's accepted filenames actually exists — used to load it, to report it in
