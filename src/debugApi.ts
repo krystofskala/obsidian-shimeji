@@ -436,8 +436,15 @@ export function installDebugApi(
 				console.info("[obsidian-shimeji] no stage");
 				return;
 			}
-			const ledges = stage.getLedges();
-			console.info(`[obsidian-shimeji] ${ledges.length} ledges currently computed:`);
+			// The first mascot's own filtered set where there is one, not the raw list: the raw list
+			// keeps walls trimmed away as unclimbable or wedged against the window edge, and shows
+			// the untrimmed tops of the rest. Reporting it is how an earlier diagnosis went wrong.
+			const first = stage.getMascots()[0];
+			const ledges = first ? stage.getLedgesFor(first) : stage.getLedges();
+			if (first) {
+				console.info(`[obsidian-shimeji] mascot#0 at (${Math.round(first.physics.x)}, ${Math.round(first.physics.y)}) on ${describeSurface(first.physics)}, ${Math.round(first.height * first.scale)}px`);
+			}
+			console.info(`[obsidian-shimeji] ${ledges.length} ledges ${first ? "as mascot#0 sees them" : "currently computed (no mascot, unfiltered)"}:`);
 			for (const ledge of ledges) {
 				if (ledge.kind === "wall") {
 					console.info(
