@@ -257,10 +257,27 @@ export function applyGravityAndLand(args: TickArgs): boolean {
 	const MAX_SUBSTEPS = 512;
 	const steps = Math.max(1, Math.min(MAX_SUBSTEPS, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)))));
 
+	// The window's own walls, as a hard bound on every substep rather than only on the final
+	// position. The sweep looks the floor up at each substep's own x, so a substep that strays
+	// outside the window finds no floor there and sails past one it is squarely above — and by the
+	// time clampToWalls pulls it back in at the end of the frame, it is already below the floor and
+	// falling with nothing under it. That ends in the off-screen respawn.
+	//
+	// Only reachable once a fall could carry sideways at all: before ballistic hops existed a drop
+	// went straight down and never left the span it started in. Reported as falling fast from the
+	// ceiling, straight through the floor, and reappearing at the top.
+	let minX = -Infinity;
+	let maxX = Infinity;
+	for (const ledge of ledges) {
+		if (ledge.kind !== "wall" || ledge.source !== "window") continue;
+		if (ledge.side === "left" && ledge.x > minX) minX = ledge.x;
+		if (ledge.side === "right" && ledge.x < maxX) maxX = ledge.x;
+	}
+
 	let prevX = startX;
 	let prevY = startY;
 	for (let i = 1; i <= steps; i++) {
-		const nx = startX + (dx * i) / steps;
+		const nx = Math.min(maxX, Math.max(minX, startX + (dx * i) / steps));
 		const ny = startY + (dy * i) / steps;
 
 		// Floor, looked up at *this* substep's x — the whole point of sweeping. Only while moving

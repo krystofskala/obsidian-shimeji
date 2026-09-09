@@ -35,11 +35,6 @@ export interface LapBounds {
 
 export type LapDirection = "left" | "right";
 
-export interface LapRun {
-	moves: ScriptedMove[];
-	lapsRemaining: number;
-}
-
 /**
  * One circuit, as the moves that perform it, starting and ending at `startX` on the floor.
  *
@@ -71,48 +66,46 @@ const LAP_TRAVEL_ACTIONS = ["Run", "Dash", "Walk"];
 /** Just the part of Mascot a lap needs, so the runner can be exercised with a plain object. */
 export interface LapWalker {
 	readonly hasScript: boolean;
-	startScript(moves: ScriptedMove[], travelActions?: string[]): void;
+	startScript(moves: ScriptedMove[], travelActions?: string[], repeat?: number): void;
 	cancelScript(): void;
 }
 
 /**
- * Drives lap running per mascot, handing over one circuit at a time.
+ * Drives lap running per mascot.
  *
- * One lap per script rather than all of them at once so that stopping is immediate at the end of
- * the current circuit and the count stays honest if the script is cut short — a mascot knocked off
- * by a lost grip stops running laps rather than resuming a circuit it is no longer on.
+ * Every requested lap goes over as *one* repeating script rather than a circuit at a time. Handing
+ * the next one over from out here left a single tick with no script running, and ordinary behaviour
+ * selection filled it — which is a mascot visibly stopping to think between laps, exactly as
+ * reported. Nothing here decides anything per lap, so there was never a reason to be asked again.
  *
  * State lives in a WeakMap so a removed mascot takes its run with it, with nothing to clean up.
  */
 export class LapRunner {
-	private runs = new WeakMap<LapWalker, LapRun>();
+	private running = new WeakSet<LapWalker>();
 
 	start(mascot: LapWalker, bounds: LapBounds, from: { x: number; y: number }, laps: number): void {
+		if (laps <= 0) return;
 		// Whichever side it is already nearer, so it sets off the short way to the first corner
 		// rather than crossing the whole window to start.
 		const direction: LapDirection = from.x - bounds.left <= bounds.right - from.x ? "left" : "right";
-		this.runs.set(mascot, { moves: lapMoves(bounds, from.x, direction), lapsRemaining: laps });
+		this.running.add(mascot);
+		mascot.startScript(lapMoves(bounds, from.x, direction), LAP_TRAVEL_ACTIONS, laps);
 	}
 
 	stop(mascot: LapWalker): void {
-		if (!this.runs.has(mascot)) return;
-		this.runs.delete(mascot);
+		if (!this.running.has(mascot)) return;
+		this.running.delete(mascot);
 		mascot.cancelScript();
 	}
 
 	isRunning(mascot: LapWalker): boolean {
-		return this.runs.has(mascot);
+		return this.running.has(mascot);
 	}
 
-	/** One frame for one mascot: hands over the next circuit whenever the last one has finished. */
+	/** One frame: notices when the run has finished, or was ended by something else entirely — a
+	 * lost grip and a respawn both cancel a script, and a mascot knocked off its circuit is no
+	 * longer running laps. */
 	tick(mascot: LapWalker): void {
-		const run = this.runs.get(mascot);
-		if (!run || mascot.hasScript) return;
-		if (run.lapsRemaining <= 0) {
-			this.runs.delete(mascot);
-			return;
-		}
-		run.lapsRemaining--;
-		mascot.startScript(run.moves, LAP_TRAVEL_ACTIONS);
+		if (this.running.has(mascot) && !mascot.hasScript) this.running.delete(mascot);
 	}
 }

@@ -43,10 +43,12 @@ describe("LapRunner", () => {
 			hasScript: false,
 			scripts: [] as ScriptedMove[][],
 			travel: [] as (string[] | undefined)[],
+			repeats: [] as (number | undefined)[],
 			cancelled: 0,
-			startScript(moves: ScriptedMove[], travelActions?: string[]) {
+			startScript(moves: ScriptedMove[], travelActions?: string[], repeat?: number) {
 				this.scripts.push(moves);
 				this.travel.push(travelActions);
+				this.repeats.push(repeat);
 				this.hasScript = true;
 			},
 			cancelScript() {
@@ -56,56 +58,58 @@ describe("LapRunner", () => {
 		};
 	}
 
-	/** One frame in which the mascot has finished whatever it was doing. */
-	function finishAndTick(runner: LapRunner, mascot: ReturnType<typeof fakeMascot>): void {
-		mascot.hasScript = false;
-		runner.tick(mascot as LapWalker);
-	}
-
-	it("hands over one circuit at a time, and only once the last has finished", () => {
+	it("hands every lap over as one repeating script, so there is no seam between them", () => {
+		// Handing the next circuit over from out here left a tick with no script running, and
+		// ordinary behaviour selection filled it — a mascot visibly stopping to think between laps.
 		const runner = new LapRunner();
 		const mascot = fakeMascot();
 		runner.start(mascot as LapWalker, BOUNDS, { x: 100, y: 800 }, 3);
 
-		runner.tick(mascot as LapWalker);
 		expect(mascot.scripts).toHaveLength(1);
-		// Still running the circuit: nothing new is handed over on top of it.
-		runner.tick(mascot as LapWalker);
-		runner.tick(mascot as LapWalker);
-		expect(mascot.scripts).toHaveLength(1);
+		expect(mascot.repeats[0]).toBe(3);
+		expect(mascot.scripts[0]).toEqual(lapMoves(BOUNDS, 100, "left"));
 
-		finishAndTick(runner, mascot);
-		expect(mascot.scripts).toHaveLength(2);
+		// Nothing further is handed over while it runs, however many frames pass.
+		for (let i = 0; i < 20; i++) runner.tick(mascot as LapWalker);
+		expect(mascot.scripts).toHaveLength(1);
 	});
 
-	it("runs exactly the number of laps asked for, then forgets the mascot", () => {
-		const runner = new LapRunner();
-		const mascot = fakeMascot();
-		runner.start(mascot as LapWalker, BOUNDS, { x: 100, y: 800 }, 3);
-		for (let i = 0; i < 20; i++) finishAndTick(runner, mascot);
-		expect(mascot.scripts).toHaveLength(3);
-		expect(runner.isRunning(mascot as LapWalker)).toBe(false);
-	});
-
-	it("never finishes when asked to run until stopped", () => {
+	it("passes an unbounded run straight through", () => {
 		const runner = new LapRunner();
 		const mascot = fakeMascot();
 		runner.start(mascot as LapWalker, BOUNDS, { x: 100, y: 800 }, Infinity);
-		for (let i = 0; i < 50; i++) finishAndTick(runner, mascot);
-		expect(mascot.scripts).toHaveLength(50);
+		expect(mascot.repeats[0]).toBe(Infinity);
+	});
+
+	it("asks for nothing at all when asked for no laps", () => {
+		const runner = new LapRunner();
+		const mascot = fakeMascot();
+		runner.start(mascot as LapWalker, BOUNDS, { x: 100, y: 800 }, 0);
+		expect(mascot.scripts).toHaveLength(0);
+		expect(runner.isRunning(mascot as LapWalker)).toBe(false);
+	});
+
+	it("notices the run ending, however it ended", () => {
+		// A lost grip and an off-screen respawn both cancel the script from the engine's side, and a
+		// mascot knocked off its circuit is no longer running laps.
+		const runner = new LapRunner();
+		const mascot = fakeMascot();
+		runner.start(mascot as LapWalker, BOUNDS, { x: 100, y: 800 }, 3);
 		expect(runner.isRunning(mascot as LapWalker)).toBe(true);
+
+		mascot.hasScript = false;
+		runner.tick(mascot as LapWalker);
+		expect(runner.isRunning(mascot as LapWalker)).toBe(false);
 	});
 
 	it("sets off towards whichever side it is already nearer", () => {
 		const runner = new LapRunner();
 		const nearLeft = fakeMascot();
 		runner.start(nearLeft as LapWalker, BOUNDS, { x: 100, y: 800 }, 1);
-		runner.tick(nearLeft as LapWalker);
 		expect(nearLeft.scripts[0][0].x).toBe(BOUNDS.left);
 
 		const nearRight = fakeMascot();
 		runner.start(nearRight as LapWalker, BOUNDS, { x: 900, y: 800 }, 1);
-		runner.tick(nearRight as LapWalker);
 		expect(nearRight.scripts[0][0].x).toBe(BOUNDS.right);
 	});
 
@@ -113,20 +117,16 @@ describe("LapRunner", () => {
 		const runner = new LapRunner();
 		const mascot = fakeMascot();
 		runner.start(mascot as LapWalker, BOUNDS, { x: 100, y: 800 }, 1);
-		runner.tick(mascot as LapWalker);
 		expect(mascot.travel[0]?.[0]).toBe("Run");
 		expect(mascot.travel[0]).toContain("Walk");
 	});
 
-	it("stop() cuts the circuit short rather than letting it play out", () => {
+	it("stop() cuts the run short rather than letting it play out", () => {
 		const runner = new LapRunner();
 		const mascot = fakeMascot();
 		runner.start(mascot as LapWalker, BOUNDS, { x: 100, y: 800 }, Infinity);
-		runner.tick(mascot as LapWalker);
 		runner.stop(mascot as LapWalker);
 		expect(mascot.cancelled).toBe(1);
 		expect(runner.isRunning(mascot as LapWalker)).toBe(false);
-		finishAndTick(runner, mascot);
-		expect(mascot.scripts).toHaveLength(1);
 	});
 });

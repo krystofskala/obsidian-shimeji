@@ -209,7 +209,7 @@ export class BehaviorAI {
 	 * default is what it is. */
 	private spotTravelActions?: string[];
 	/** A fixed sequence of moves being performed in order — see startScript. */
-	private script?: { steps: ScriptedMove[]; index: number };
+	private script?: { steps: ScriptedMove[]; index: number; repeat: number };
 	/**
 	 * What the mascot is currently *doing* about an outstanding order, when that is more than simply
 	 * walking there. Each phase is a piece of physical work with an animation behind it, which is the
@@ -291,9 +291,14 @@ export class BehaviorAI {
 	 *
 	 * `travelActions` names the pack actions the floor legs use, the same option `orderToSpot`
 	 * takes and for the same reason.
+	 *
+	 * `repeat` runs the whole sequence that many times over, `Infinity` included, and exists so a
+	 * repeating script has no seam. Handing the sequence over again from outside once it finished
+	 * left one tick with no script in it, and ordinary behaviour selection filled that tick — which
+	 * is a mascot visibly stopping to think between laps.
 	 */
-	startScript(steps: ScriptedMove[], travelActions?: string[]): void {
-		this.script = steps.length > 0 ? { steps, index: 0 } : undefined;
+	startScript(steps: ScriptedMove[], travelActions?: string[], repeat = 1): void {
+		this.script = steps.length > 0 && repeat > 0 ? { steps, index: 0, repeat } : undefined;
 		this.spotTravelActions = travelActions;
 		this.orderedSpot = undefined;
 		this.spotPhase = undefined;
@@ -321,11 +326,18 @@ export class BehaviorAI {
 	private driveScript(env: PushEnv, ledges: Ledge[]): void {
 		const script = this.script;
 		if (!script) return;
-		const step = script.steps[script.index];
-		if (!step) {
-			this.cancelScript();
-			return;
+		if (script.index >= script.steps.length) {
+			// One pass done. Wrapping here rather than being re-armed from outside is what keeps a
+			// repeat seamless: the next move starts on this same tick, with nothing in between for
+			// ordinary reselection to slip into.
+			script.repeat--;
+			if (script.repeat <= 0) {
+				this.cancelScript();
+				return;
+			}
+			script.index = 0;
 		}
+		const step = script.steps[script.index];
 		script.index++;
 		if (!this.startRouteAction(env, ledges, step.via, step.x, step.y, script.steps.length - script.index)) this.cancelScript();
 	}
