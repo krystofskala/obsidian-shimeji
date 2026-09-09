@@ -986,6 +986,11 @@ export class BehaviorAI {
 		// ordinary reselection below instead).
 		if (!done) {
 			if (this.isOffScreen(mascot)) {
+				// Same reasoning as losing grip: a respawn teleports the mascot to a random x above
+				// the window, so whatever circuit it was performing no longer has anything to do
+				// with where it is. Resuming the remaining moves from there plays the rest of the
+				// script out from a position it was never written for.
+				this.cancelScript();
 				this.startBehavior(this.respawnAndFall(mascot), env);
 				return;
 			}
