@@ -1,3 +1,4 @@
+import { SHIMEJI_TICKS_PER_SEC } from "./constants";
 import { CEILING_APPROACH_PX } from "../engine/Ledges";
 import { debugLog } from "../engine/debugLog";
 import type { Mascot } from "../engine/Mascot";
@@ -126,6 +127,17 @@ const ROUTE_ACTIONS: Record<Exclude<RouteVia, "drop">, string[]> = {
  * scripts the alternation — it falls out of the corridor being symmetric.
  */
 const CHIMNEY_HOP_PX = 120;
+
+/** How hard a routed drop pushes off the edge it is leaving, in the pack's own tick units so it
+ * reads against `JumpFromLeftEdgeOfIE`'s authored `InitialVX`/`InitialVY` (15-20 sideways, 20-25
+ * up). Far smaller than those, and the size is measured rather than chosen: the router plans a
+ * drop landing directly below the edge, so every pixel of sideways travel is a pixel of
+ * disagreement with that plan. At the pack's own 15-20 an ordered descent across a card-themed
+ * layout drifts 157px off course and strands itself — a real test catches it. 2-3 is the most that
+ * still leaves every route intact, and it is enough to read as pushing off rather than sliding
+ * off. Upward is free: it delays the landing without moving it sideways. */
+const LETGO_HOP_VX_TICKS = { min: 2, max: 3 };
+const LETGO_HOP_VY_TICKS = { min: 8, max: 10 };
 
 /**
  * How far from a floor's end the mascot may be and still be understood as letting go *of that end*.
@@ -713,19 +725,40 @@ export class BehaviorAI {
 	private letGoAndFall(env: PushEnv, ledges: Ledge[]): boolean {
 		const { physics } = env.mascot;
 		const floor = physics.currentFloor?.kind === "floor" ? physics.currentFloor : undefined;
+		// Which way the mascot leaves, so the hop below pushes away from the edge rather than back
+		// over the surface it is leaving. Zero when it is not stepping off anything identifiable.
+		let letGoDirection = 0;
 		if (floor && physics.grounded) {
 			const toLeft = Math.abs(physics.x - floor.x1);
 			const toRight = Math.abs(physics.x - floor.x2);
 			// Absolute, not relative: the mascot may still be up to SPOT_ARRIVAL_PX short of the edge
 			// when a drop phase decides it has arrived, and a fixed-size nudge would leave it standing.
 			const offX = Math.min(toLeft, toRight) <= EDGE_LETGO_REACH_PX ? edgeStepOffX(ledges, floor, toLeft <= toRight ? "x1" : "x2") : undefined;
-			if (offX !== undefined) physics.x = offX;
+			if (offX !== undefined) {
+				physics.x = offX;
+				letGoDirection = toLeft <= toRight ? -1 : 1;
+			}
 			else debugLog("letting go with nothing to step off onto — expect an immediate landing", { x: Math.round(physics.x), floor: [floor.x1, floor.x2] });
 		}
 		physics.currentCeiling = undefined;
 		physics.currentWall = undefined;
 		physics.currentFloor = undefined;
 		physics.grounded = false;
+		// Push off, rather than merely stop holding on. The pack's own way off a pane edge is
+		// `Falling` with `InitialVX="${-15-Math.random()*5}" InitialVY="${-20-Math.random()*5}"` —
+		// a launch sideways and slightly up, with gravity making the arc (see JumpFromLeftEdgeOfIE).
+		// A routed drop had none of that: it nudged the mascot 6px past the edge and fell straight
+		// down, which reads as sliding off rather than jumping off.
+		//
+		// Deliberately a smaller push than the pack's own deliberate leap. The router plans a drop
+		// landing directly below the edge, so every pixel of sideways travel is a pixel of
+		// disagreement with that plan; callers execute one leg and re-plan, which absorbs a hop of
+		// this size but would fight a 300px bound. `Fall` only overwrites velocity when it is given
+		// InitialVX/VY of its own, and forceFallBehavior gives it none, so this survives the start.
+		if (letGoDirection !== 0) {
+			physics.vx = letGoDirection * this.rng.range(LETGO_HOP_VX_TICKS.min, LETGO_HOP_VX_TICKS.max) * SHIMEJI_TICKS_PER_SEC;
+			physics.vy = -this.rng.range(LETGO_HOP_VY_TICKS.min, LETGO_HOP_VY_TICKS.max) * SHIMEJI_TICKS_PER_SEC;
+		}
 		this.startBehavior(this.forceFallBehavior(), env);
 		return true;
 	}
