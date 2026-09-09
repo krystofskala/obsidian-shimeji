@@ -200,6 +200,42 @@ describe("ActionRunner", () => {
 			expect(mascot.physics.y).toBeGreaterThan(500);
 		});
 
+		it("holds the mirror through a still frame mid-cycle", () => {
+			// Reported from the wild: a climb cycle with one zero-velocity pose in it made the mascot
+			// snap upright and back once per cycle — twenty-odd times down a single wall — because the
+			// direction was read off whichever frame happened to be showing. It belongs to the action.
+			const paused: MascotPack = {
+				...NOOP_PACK,
+				actions: new Map([
+					[
+						"ClimbWall",
+						action({
+							name: "ClimbWall",
+							type: "Move",
+							borderType: "Wall",
+							animations: animOf([
+								{ image: "/c1.png", durationMs: 20, velocity: { x: 0, y: -100 } },
+								{ image: "/c2.png", durationMs: 20, velocity: { x: 0, y: 0 } },
+								{ image: "/c3.png", durationMs: 20, velocity: { x: 0, y: -100 } },
+							]),
+						}),
+					],
+				]),
+			};
+			const mascot = makeFakeMascot();
+			mascot.physics.y = 200;
+			const env = envFor(paused, mascot);
+			const runner = new ActionRunner(paused);
+			runner.start("ClimbWall", env, { TargetY: "900" });
+
+			// Long enough to step through every pose of the cycle, still frame included.
+			for (let i = 0; i < 10; i++) {
+				runner.tick(env, 0.03, [wall]);
+				expect(mascot.climbArtReversed).toBe(true);
+			}
+			expect(mascot.shownImages).toContain("resolved:/c2.png"); // the still frame really did show
+		});
+
 		it("marks the art reversed only when travelling against the way it was drawn", () => {
 			// The poses above are authored upward (-100). Climbing up is the drawn direction, so nothing
 			// is mirrored; climbing down is the same art used the other way, which a character whose climb
