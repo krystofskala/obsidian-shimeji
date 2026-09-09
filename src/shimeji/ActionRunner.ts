@@ -244,6 +244,10 @@ const RANDOM_OPTION_HOLD_MAX_MS = 16000;
 export class ActionRunner {
 	private stack: Frame[] = [];
 	private lostGroundFlag = false;
+	/** Age of whatever is on the stack, for currentActionMs. Reset by start(), not by pushAction,
+	 * so a Sequence stepping through its children reads as one continuous action rather than
+	 * restarting the clock at every child. */
+	private runningMs = 0;
 	private lastLeafWasMove = false;
 	/** Sticky picks for random-option action pools, keyed by action name — see pickRandomOption for
 	 * why this has to live on the runner (long-lived, one per mascot) rather than the per-push
@@ -255,6 +259,24 @@ export class ActionRunner {
 
 	get isRunning(): boolean {
 		return this.stack.length > 0;
+	}
+
+	/**
+	 * The action actually playing right now — the deepest frame on the stack, not the outermost.
+	 *
+	 * A behaviour usually starts a Sequence or Select, and naming *that* says nothing about what
+	 * the mascot is doing: every stall so far has been some leaf holding or moving forever inside
+	 * a wrapper. Diagnostics want the leaf. Both getters exist for `where()`, which had no way to
+	 * answer "what is it doing, and for how long" — the one question every stuck-mascot report
+	 * turns on.
+	 */
+	get currentActionName(): string | undefined {
+		return this.stack[this.stack.length - 1]?.action.name;
+	}
+
+	/** Milliseconds since the current action was started, across every frame pushed since. */
+	get currentActionMs(): number {
+		return this.runningMs;
 	}
 
 	/** Whether the most recent frame to actually finish (as opposed to a Sequence/Select wrapper
@@ -283,6 +305,7 @@ export class ActionRunner {
 	start(name: string, env: PushEnv, overrides?: Record<string, string>): boolean {
 		this.stack = [];
 		this.lostGroundFlag = false;
+		this.runningMs = 0;
 		return this.pushAction(name, env, overrides);
 	}
 
@@ -488,6 +511,7 @@ export class ActionRunner {
 
 	/** Advances one frame. Returns true once the whole action tree has completed. */
 	tick(env: PushEnv, dt: number, ledges: Ledge[]): boolean {
+		this.runningMs += dt * 1000;
 		for (let guard = 0; guard < 64; guard++) {
 			if (this.stack.length === 0) return true;
 			const frame = this.stack[this.stack.length - 1];

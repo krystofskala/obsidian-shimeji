@@ -58,6 +58,11 @@ const FEET_DRAG_ANCHOR_OFFSET_Y = 0;
  */
 const FEET_GRAB_FRACTION = 1 / 3;
 
+/** Movement below this, in pixels, does not reset the stillness clock — see Mascot.stillForMs. A
+ * couple of pixels is well under a single walk step and far under anything a viewer would call
+ * moving, while still forgiving the sub-pixel jitter a held pose can produce. */
+const STILL_EPS_PX = 2;
+
 /** Touch/pen has no right-click, so holding still opens the context menu instead — the same
  * long-press-for-options gesture Obsidian's own mobile UI already uses elsewhere (e.g. the
  * file explorer). Gated to non-mouse pointers only; desktop's existing right-click is
@@ -150,6 +155,11 @@ export interface MascotDriver {
 	consumeJustReachedSpot?(): boolean;
 	/** The behavior currently running, for the debug readout (shimejiDebug.where/watch). */
 	currentBehaviorName?(): string | undefined;
+	/** The leaf action playing right now and its age in ms — the two readings `where()` was
+	 * missing. A behaviour name alone cannot distinguish "mid-climb" from "wedged in a hold that
+	 * will never end", and every stuck-mascot report so far has turned on exactly that. */
+	currentActionName?(): string | undefined;
+	currentActionMs?(): number;
 	onDetach?(mascot: Mascot): void;
 }
 
@@ -458,6 +468,37 @@ export class Mascot {
 		return this.driver?.currentBehaviorName?.();
 	}
 
+	get currentActionName(): string | undefined {
+		return this.driver?.currentActionName?.();
+	}
+
+	get currentActionMs(): number {
+		return this.driver?.currentActionMs?.() ?? 0;
+	}
+
+	/**
+	 * How long this mascot has been in the same place, in ms — the one reading that identifies a
+	 * stuck mascot without first knowing *why* it is stuck.
+	 *
+	 * Every diagnosis of "it stood in the corner for an hour" has so far had to work backwards from
+	 * a position snapshot, which cannot tell a mascot wedged in a loop from one merely caught
+	 * mid-stride. This separates them outright, and it does so for causes not yet thought of:
+	 * whatever new way a mascot finds to stop moving, this notices.
+	 *
+	 * Deliberately measured on position rather than on the action: a mascot re-planning the same
+	 * zero-length leg every tick is busy by every internal measure and motionless on screen, and
+	 * that exact shape has now been the bug twice (see keepOrFindWall's own note about a 3px
+	 * "climb" completing instantly and re-planning forever).
+	 */
+	get stillForMs(): number {
+		return this.stillMs;
+	}
+
+	/** Threshold in pixels below which a tick counts as not having moved. Sub-pixel drift from a
+	 * pose's own velocity should not read as movement — the mascot is visibly parked. */
+	private stillMs = 0;
+	private stillFrom: Vec2 = { x: 0, y: 0 };
+
 	private bindPointerHandlers(): void {
 		this.el.addEventListener("pointerdown", (ev) => {
 			// Touching the mascot cancels an in-progress follow-the-mouse pursuit or spot order, before any other
@@ -688,6 +729,16 @@ export class Mascot {
 	 * simulate() calls if the display stalled). */
 	simulate(dtSeconds: number, ledges: Ledge[], nearbyMascotX?: number): void {
 		this.stateElapsedMs += dtSeconds * 1000;
+		// Measured against the position this stillness period started from, not against the previous
+		// tick: a mascot inching along at a fraction of a pixel per tick would otherwise reset the
+		// clock every tick and never read as still, which is precisely the parked-but-busy case this
+		// exists to catch.
+		if (Math.hypot(this.physics.x - this.stillFrom.x, this.physics.y - this.stillFrom.y) > STILL_EPS_PX) {
+			this.stillFrom = { x: this.physics.x, y: this.physics.y };
+			this.stillMs = 0;
+		} else {
+			this.stillMs += dtSeconds * 1000;
+		}
 		this.angerHeat = decayAnger(this.angerHeat, dtSeconds);
 		const ambient = this.deps.getAmbientPointer();
 

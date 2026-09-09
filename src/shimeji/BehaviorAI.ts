@@ -369,6 +369,16 @@ export class BehaviorAI {
 		return this.runner.isRunning;
 	}
 
+	/** The leaf action playing right now, and its age — passed straight through for `where()`.
+	 * See ActionRunner's own getters for why the leaf rather than the behaviour. */
+	get currentActionName(): string | undefined {
+		return this.runner.currentActionName;
+	}
+
+	get currentActionMs(): number {
+		return this.runner.currentActionMs;
+	}
+
 	/**
 	 * Drives an outstanding spot order. Routes there like anything else; when the router reports
 	 * there is nowhere nearer to go and the mascot still isn't at the spot, asks for a surface to be

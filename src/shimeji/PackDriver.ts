@@ -158,6 +158,14 @@ export class PackDriver implements MascotDriver {
 		return this.ai.currentBehaviorName;
 	}
 
+	currentActionName(): string | undefined {
+		return this.ai.currentActionName;
+	}
+
+	currentActionMs(): number {
+		return this.ai.currentActionMs;
+	}
+
 	listBehaviorNames(): string[] {
 		return Array.from(this.pack.behaviors.keys()).sort((a, b) => a.localeCompare(b));
 	}

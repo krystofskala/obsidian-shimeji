@@ -385,6 +385,17 @@ export function installDebugApi(
 					facing: m.physics.facing === 1 ? "right" : "left",
 					on: describeSurface(m.physics),
 					behavior: m.currentBehaviorName ?? "-",
+					// The leaf action, not the behaviour: a behaviour almost always starts a Sequence
+					// or Select, so its name says nothing about what is actually playing. Every stall
+					// investigated so far came down to which leaf was running and how long it had
+					// been running for, and neither was visible here.
+					action: m.currentActionName ?? "-",
+					"for": `${(m.currentActionMs / 1000).toFixed(1)}s`,
+					// The column to read first. A mascot caught mid-stride and a mascot wedged in a
+					// loop look identical in every other column; this one separates them, whatever the
+					// cause. Anything past a few seconds on a mascot that is meant to be travelling is
+					// the thing to investigate.
+					still: `${(m.stillForMs / 1000).toFixed(1)}s`,
 					// A spot order belongs to one mascot, and a new order goes to whichever is *nearest*
 					// the point clicked — so several orders given in a row can land on several different
 					// mascots and be carried out at once. That reads, from across the room, as one mascot
