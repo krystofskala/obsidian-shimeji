@@ -815,7 +815,14 @@ export class BehaviorAI {
 		// An order may name its own floor actions. Only floor legs, and only while that order is
 		// what is being driven: a climb or a chimney hop has exactly one action that performs it,
 		// and following/roaming legs are nobody's order to re-style.
-		const travelActions = effectiveVia === "walk" && this.spotTravelActions ? this.spotTravelActions : ROUTE_ACTIONS[effectiveVia];
+		// Only while the order or script that asked for them is actually the thing driving. Keyed on
+		// that rather than on the field alone because the field outlives them: any path that leaves a
+		// script or order without clearing it — a drag, a forced behaviour, a menu pick — left every
+		// later floor leg using the lap's own action list for the rest of the mascot's life. One
+		// character's custom `Run` had a sign error in half its poses, so from the first lap onward it
+		// walked backwards for good, laps off or not, and looked like an animation problem.
+		const driving = this.orderedSpot !== undefined || this.script !== undefined;
+		const travelActions = effectiveVia === "walk" && driving && this.spotTravelActions ? this.spotTravelActions : ROUTE_ACTIONS[effectiveVia];
 		for (const name of travelActions) {
 			if (!this.pack.actions.has(name)) continue;
 			this.currentBehavior = attributeTo;
