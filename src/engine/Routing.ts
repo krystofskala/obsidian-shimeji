@@ -425,7 +425,20 @@ function transfersFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts
 				if (landX < other.x1 - JOIN_EPS || landX > other.x2 + JOIN_EPS) continue;
 				bestHop = { to: other, at: { x: clamp(landX, other.x1, other.x2), y: other.y } };
 			}
-			if (bestHop) out.push({ from: { x: ledge[end], y: ledge.y }, to: bestHop.to, at: bestHop.at, via: "hop" });
+			// ...and only if the arc can actually be flown. Solving where a hop *lands* says nothing
+			// about what it passes through on the way, and the executor's own fall sweep stops a
+			// mascot at the first wall it crosses (see applyGravityAndLand's findCrossedWall) — pane
+			// walls included. Live, that turned a 611px hop into a 2px one: Obsidian's pane dividers
+			// are an 8px gap with a wall on each side, so a mascot stepping off the left end of a
+			// pane floor launches sideways from *inside* that gap and is pinned to the facing wall
+			// on its first tick. Reported as mascots piling up along a pane edge and never getting
+			// down; seven of twenty were sitting in the two divider gaps of one layout.
+			//
+			// Rejecting the hop is the whole fix: a plain `drop` off the same edge is already
+			// offered above, falls straight down, crosses nothing, and gets there.
+			if (bestHop && !hopHitsWall(ledges, offX, ledge.y, dir, bestHop.to.y - ledge.y, opts)) {
+				out.push({ from: { x: ledge[end], y: ledge.y }, to: bestHop.to, at: bestHop.at, via: "hop" });
+			}
 		}
 	}
 
@@ -486,6 +499,42 @@ export function edgeStepOffX(ledges: Ledge[], floor: FloorLedge, end: "x1" | "x2
 function hopFlightTicks(dy: number, opts: RouteOptions): number {
 	const u = opts.hop.vy;
 	return (u + Math.sqrt(u * u + 2 * opts.gravity * Math.max(0, dy))) / opts.gravity;
+}
+
+/**
+ * Whether a hop launched from `(fromX, fromY)` would fly into a wall before completing its arc.
+ *
+ * The router and the mascot carrying out its plans have to agree about what a move does, and until
+ * this existed they disagreed about hops entirely: the router solved the landing point analytically
+ * while the engine flies the arc one substep at a time and stops dead at the first wall crossed.
+ * A hop planned across a pane divider is the case that matters — the two walls of a divider are
+ * only ~8px apart, and the step off a floor's end lands the mascot between them.
+ *
+ * Sampled per tick rather than solved: the arc crosses each x once, so tick resolution cannot miss
+ * a wall it spends a whole tick approaching, and the graph is a handful of panes.
+ */
+function hopHitsWall(ledges: Ledge[], fromX: number, fromY: number, dir: number, dy: number, opts: RouteOptions): boolean {
+	const flight = hopFlightTicks(dy, opts);
+	const steps = Math.max(1, Math.ceil(flight));
+	let prevX = fromX;
+	for (let i = 1; i <= steps; i++) {
+		const t = (flight * i) / steps;
+		const x = fromX + dir * opts.hop.vx * t;
+		// The launch is upward, so the arc rises before it falls — the same solution hopFlightTicks
+		// inverts. Getting this wrong would test the wrong heights and wave blocked hops through.
+		const y = fromY - opts.hop.vy * t + (opts.gravity * t * t) / 2;
+		const lo = Math.min(prevX, x);
+		const hi = Math.max(prevX, x);
+		for (const l of ledges) {
+			if (l.kind !== "wall") continue;
+			// Strictly crossed, matching the executor's own test: a wall exactly at the launch x is
+			// one the mascot is standing against, not one it flies into.
+			if (l.x <= lo || l.x >= hi) continue;
+			if (y >= l.y1 && y <= l.y2) return true;
+		}
+		prevX = x;
+	}
+	return false;
 }
 
 function stepCost(via: RouteVia, from: Vec2, to: Vec2, opts: RouteOptions, along?: Ledge, ledges?: Ledge[]): number {
