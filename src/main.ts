@@ -81,8 +81,12 @@ const SPOT_ORDER_CLICKS = 3;
 
 export default class ShimejiPlugin extends Plugin {
 	/** What the mascots say. Purely an observer of the engine — see SpeechBubbles. */
-	readonly speech: SpeechBubbles = new SpeechBubbles(DEFAULT_SPEECH_OPTIONS, (mascot) => this.packIdOf(mascot), Math.random, (mascot, text) =>
-		this.chatBubble.addScriptedLine(mascot, text),
+	readonly speech: SpeechBubbles = new SpeechBubbles(
+		DEFAULT_SPEECH_OPTIONS,
+		(mascot) => this.packIdOf(mascot),
+		Math.random,
+		(mascot, text) => this.chatBubble.addScriptedLine(mascot, text),
+		this.app,
 	);
 	/** Last parse of the speech file, for the settings screen. Undefined until first read. */
 	speechStats?: SpeechStats;

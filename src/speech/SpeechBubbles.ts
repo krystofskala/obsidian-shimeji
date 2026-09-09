@@ -1,4 +1,4 @@
-import { Component, MarkdownRenderer } from "obsidian";
+import { Component, MarkdownRenderer, type App } from "obsidian";
 import type { Mascot } from "../engine/Mascot";
 import { moodTriggerId, type Mood } from "../engine/mood";
 import { SpeechScheduler, type SpeechOptions } from "./SpeechScheduler";
@@ -106,6 +106,10 @@ export class SpeechBubbles {
 		 * floating bubble — returns true if it did. Checked first in `show`, so a mascot mid-chat
 		 * never gets a bubble the user didn't ask to see popping up over its head as well. */
 		private tryRedirect: (mascot: Mascot, text: string) => boolean = () => false,
+		/** Only for MarkdownRenderer.render, which needs it to resolve a line's internal links and
+		 * embeds. Last and optional so a test can build one of these without an Obsidian app; the
+		 * render then falls back to the deprecated entry point, which is fine for text. */
+		private app?: App,
 	) {
 		this.scheduler = new SpeechScheduler(options);
 		// Loaded, not merely constructed. MarkdownRenderer.renderMarkdown attaches a
@@ -295,7 +299,16 @@ export class SpeechBubbles {
 		this.bubbles.set(mascot, { el, until: performance.now() + BUBBLE_MS, generation });
 		this.position(mascot, el);
 		el.empty();
-		void MarkdownRenderer.renderMarkdown(text, el, this.sourcePathFor(mascot), this.rendererLifecycle).then(() => {
+		// `MarkdownRenderer.render`, not `renderMarkdown`: the latter is deprecated, and the
+		// difference is the `app` it now takes explicitly — which is what resolves a line's internal
+		// links and embeds. Two earlier attempts at making `![[image.png]]` work in a bubble fixed
+		// real problems either side of this (the source path, and never loading the component that
+		// owns the render) and still showed nothing, because the entry point itself was the wrong
+		// one. The fallback is for tests, which have no app and render only text.
+		const rendered = this.app
+			? MarkdownRenderer.render(this.app, text, el, this.sourcePathFor(mascot), this.rendererLifecycle)
+			: MarkdownRenderer.renderMarkdown(text, el, this.sourcePathFor(mascot), this.rendererLifecycle);
+		void rendered.then(() => {
 			if (this.bubbles.get(mascot)?.generation !== generation) return;
 			// The embed may have changed the bubble's own size once it finished laying out.
 			this.position(mascot, el);

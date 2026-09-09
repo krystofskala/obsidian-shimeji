@@ -80,7 +80,7 @@ export class RewriteSelectionModal extends Modal {
 		const card = this.resultEl.createDiv({ cls: "shimeji-bubble-chat-edit" });
 		card.createDiv({ cls: "shimeji-bubble-chat-edit-label", text: "Proposed rewrite" });
 		const preview = card.createDiv({ cls: "shimeji-bubble-chat-edit-preview" });
-		await MarkdownRenderer.renderMarkdown(rewritten, preview, "", this.rendererLifecycle);
+		await MarkdownRenderer.render(this.app, rewritten, preview, "", this.rendererLifecycle);
 
 		const actions = card.createDiv({ cls: "shimeji-bubble-chat-edit-actions" });
 		actions.createEl("button", { cls: "shimeji-bubble-chat-edit-apply", text: "Apply" }).onclick = () => {
