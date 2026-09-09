@@ -1,186 +1,118 @@
-import type { Vec2 } from "./types";
+import type { ScriptedMove } from "./Routing";
 
 /**
- * **Invented.** Running laps around the edge of the window.
+ * **Invented.** Running laps around the inside edge of the window.
  *
- * Built entirely on top of the existing spot-order system rather than as a new kind of movement:
- * `orderToSpot` already routes a mascot anywhere it can physically get, walking floors, climbing
- * walls and traversing ceilings as the route demands (see Routing's own RouteVia). A lap is
- * therefore not a new capability at all, only a *sequence* of ordinary orders — the four corners,
- * in cyclic order — with the next one issued as each is reached.
+ * Deliberately *not* routed. This was first built on `orderToSpot`, and every symptom said the
+ * same thing: the router optimises time, so it crossed by the floor instead of the ceiling; it has
+ * a 40px arrival tolerance, so corners counted without being on the surface; it may plan a `drop`,
+ * so the mascot fell down the far side rather than climbing it; and it can give up, leaving an
+ * order that would never finish. All of those are the right behaviours for "get to that spot" and
+ * all of them are wrong for a circuit, because with a circuit the *shape is the whole point*.
+ * There is nothing here to plan: floor to the corner, up the wall, across the ceiling, down the
+ * far wall, back along the floor.
  *
- * Kept pure and free of Mascot here so the part that is easy to get wrong (which corner comes
- * next, and when a lap has actually been completed) can be tested without an engine, a DOM or a
- * viewport anywhere near it. `LapRunner` below is the only part that touches a mascot, and it
- * holds no geometry of its own.
+ * So a lap is a fixed sequence of moves handed to the engine as a script (see
+ * BehaviorAI.startScript) — the same execution machinery an ordinary route step uses, without any
+ * of the deciding. A slow character takes minutes over one; that is the honest answer for a slow
+ * character rather than a reason to reroute it.
+ *
+ * The window's own edge only, and its *inside*: pane edges are not the outline of Obsidian, and a
+ * mascot on the outside of the window is off-screen (see withoutWallsInUnusableEdgeStrips).
  */
 
 export interface LapBounds {
 	left: number;
 	right: number;
-	/** The highest a mascot's anchor may climb on a wall — see Ledges' minClimbableY. Where the top
-	 * corners sit, since that is the top of the surface they are corners *of*. */
+	/** The highest a mascot's anchor may climb on a wall — see Ledges' minClimbableY. Where the
+	 * vertical legs stop, since that is the top of the surface they climb. */
 	wallTop: number;
-	/** The ceiling itself, which sits above `wallTop` by the handoff distance the pack's own
-	 * ClimbAlongWall covers with a discrete Offset. The crossing happens here, not at wallTop:
-	 * midway along the window that height is open air, and only the ceiling reaches it. */
+	/** The ceiling itself, above `wallTop` by the handoff distance the pack's own ClimbAlongWall
+	 * covers with a discrete Offset, and which startRouteAction now bridges for a routed step too. */
 	ceiling: number;
 	bottom: number;
 }
 
-/** `Infinity` is a legitimate value — the "until I stop it" option — so this is deliberately not
- * constrained to a whole finite number anywhere it is stored or counted down. */
+export type LapDirection = "left" | "right";
+
 export interface LapRun {
-	/** The four corners, cyclic, rotated so the nearest one to where the mascot started is first. */
-	waypoints: Vec2[];
-	/** How many legs have been *ordered* so far, including the initial approach to waypoint 0. */
-	legsIssued: number;
+	moves: ScriptedMove[];
 	lapsRemaining: number;
 }
 
 /**
- * The four corners, counter-clockwise from the bottom left.
+ * One circuit, as the moves that perform it, starting and ending at `startX` on the floor.
  *
- * `margin` defaults to zero, and the corners sit exactly on the walls and the floor, because that
- * is where a mascot can actually *be*. An earlier version inset them a few pixels on the theory
- * that a target on the join between two surfaces routes ambiguously; what it really did was move
- * the top corners off the wall into open air. A live trace settled it: a 73px mascot clinging to
- * the window's left wall sits at x=0 and can climb no higher than y=104 (see minClimbableY), while
- * the inset corner was at (8, 112) — eight pixels to the side of the only thing within reach, with
- * no floor under it for another 1280px. The mascot climbed to the top of the wall, could get no
- * nearer, and held an order it could never finish.
+ * Anticlockwise for `"left"`: along the floor to the left corner, up the left wall, across the
+ * ceiling, down the right wall, back along the floor. Every vertical leg is a climb in both
+ * directions — coming down the far side is `climb`, never a drop, because a lap that ends by
+ * falling off the ceiling is not a lap.
  */
-export function lapCorners(bounds: LapBounds, margin = 0): Vec2[] {
-	const left = bounds.left + margin;
-	const right = bounds.right - margin;
-	const top = bounds.wallTop + margin;
-	const bottom = bounds.bottom - margin;
-	const middle = (left + right) / 2;
+export function lapMoves(bounds: LapBounds, startX: number, direction: LapDirection): ScriptedMove[] {
+	const near = direction === "left" ? bounds.left : bounds.right;
+	const far = direction === "left" ? bounds.right : bounds.left;
 	return [
-		{ x: left, y: bottom },
-		{ x: left, y: top },
-		// Midway along each horizontal edge, and the reason the lap holds its shape at all. With
-		// only the four corners the router is free to answer "get from one wall top to the other"
-		// however it likes, and it costs a route in ticks — so it went down, across the floor and
-		// up the far side, which is quicker and is not a lap. A point halfway along the ceiling can
-		// be reached by exactly one surface, so the crossing stops being a matter of price.
-		//
-		// This is the general shape of "go *this* way regardless of speed" in a router that only
-		// understands cost: constrain the path with somewhere it must pass through, rather than
-		// trying to argue with the arithmetic. A slow character will take minutes over a lap, which
-		// is the honest answer for a slow character rather than a reason to reroute it.
-		{ x: middle, y: bounds.ceiling },
-		{ x: right, y: top },
-		{ x: right, y: bottom },
-		{ x: middle, y: bottom },
+		{ via: "walk", x: near, y: bounds.bottom },
+		{ via: "climb", x: near, y: bounds.wallTop },
+		// Aimed at the far end of the ceiling. The bridge in startRouteAction lifts the mascot the
+		// last stretch onto the ceiling before ClimbCeiling begins, exactly as the pack's own
+		// ClimbAlongWall does with `Offset Y="-64"`.
+		{ via: "traverse", x: far, y: bounds.ceiling },
+		{ via: "climb", x: far, y: bounds.bottom },
+		{ via: "walk", x: startX, y: bounds.bottom },
 	];
 }
 
-/**
- * Starts a run, beginning at whichever corner the mascot is already nearest.
- *
- * Nearest rather than always the bottom left so a mascot that is halfway up the right-hand wall
- * carries on from there instead of crossing the whole window first to reach an arbitrary start
- * line — the lap is the same circuit either way, and the direction of travel is preserved by
- * rotating the cycle rather than reordering it.
- */
-export function startLapRun(bounds: LapBounds, from: Vec2, laps: number, margin?: number): LapRun {
-	const corners = lapCorners(bounds, margin);
-	let nearest = 0;
-	let bestDistance = Infinity;
-	corners.forEach((corner, i) => {
-		const distance = (corner.x - from.x) ** 2 + (corner.y - from.y) ** 2;
-		if (distance < bestDistance) {
-			bestDistance = distance;
-			nearest = i;
-		}
-	});
-	return {
-		waypoints: [...corners.slice(nearest), ...corners.slice(0, nearest)],
-		legsIssued: 0,
-		lapsRemaining: laps,
-	};
-}
-
-/**
- * The next corner to order, or undefined once the run is finished.
- *
- * The first call is the *approach* — getting to the starting corner — and does not count towards
- * the lap total, since a mascot that happened to start in the middle of the floor has not run a
- * lap by arriving at a corner. Every fourth leg after that lands back on the starting corner and
- * is what completes one.
- */
-export function nextLapWaypoint(run: LapRun): Vec2 | undefined {
-	if (run.lapsRemaining <= 0) return undefined;
-	const point = run.waypoints[run.legsIssued % run.waypoints.length];
-	run.legsIssued++;
-	if (run.legsIssued > 1 && (run.legsIssued - 1) % run.waypoints.length === 0) run.lapsRemaining--;
-	return point;
-}
-
-/** Just the part of Mascot a lap needs, so the runner below can be exercised with a plain object.
- * `allowSurgery: false` is the whole reason the option exists — see LapRunner.tick. */
-export interface LapWalker {
-	readonly hasSpotOrder: boolean;
-	orderToSpot(point: Vec2, options?: { allowSurgery?: boolean; travelActions?: string[] }): void;
-	cancelSpotOrder(): void;
-}
-
-/**
- * What a lap's floor legs are performed with, in preference order.
- *
- * Ordinary orders use Dash, and rightly: DEFAULT_ROUTE_OPTIONS costs a floor leg at 8px/tick,
- * which is Dash's own speed, and those costs decide real routing choices. A lap can afford to
- * differ because nothing decides anything from its estimates — surgery is off, and there is no
- * give-up threshold to mis-time. What it buys is that a lap is a *sustained* journey, several legs
- * end to end, and a burst move repeated four times a side reads as frantic rather than as running
- * a lap. Run is the pack's own action for covering ground steadily.
- */
+/** The pack actions a lap's floor legs use. Ordinary orders keep Dash, whose speed is what the
+ * router's cost model is built on; a lap is a sustained circuit, where a burst move repeated every
+ * side reads as frantic rather than as running one. */
 const LAP_TRAVEL_ACTIONS = ["Run", "Dash", "Walk"];
 
+/** Just the part of Mascot a lap needs, so the runner can be exercised with a plain object. */
+export interface LapWalker {
+	readonly hasScript: boolean;
+	startScript(moves: ScriptedMove[], travelActions?: string[]): void;
+	cancelScript(): void;
+}
+
 /**
- * Drives one lap run per mascot, issuing the next corner as each is reached.
+ * Drives lap running per mascot, handing over one circuit at a time.
  *
- * Polls `hasSpotOrder` rather than subscribing to an arrival event, which is the same thing
- * Residency already does to notice its resident reaching the door — an order that was cancelled or
- * given up on as unreachable clears the flag exactly as arriving does, so a lap that cannot
- * continue simply ends rather than wedging.
+ * One lap per script rather than all of them at once so that stopping is immediate at the end of
+ * the current circuit and the count stays honest if the script is cut short — a mascot knocked off
+ * by a lost grip stops running laps rather than resuming a circuit it is no longer on.
  *
  * State lives in a WeakMap so a removed mascot takes its run with it, with nothing to clean up.
  */
 export class LapRunner {
 	private runs = new WeakMap<LapWalker, LapRun>();
 
-	start(mascot: LapWalker, bounds: LapBounds, from: Vec2, laps: number): void {
-		this.runs.set(mascot, startLapRun(bounds, from, laps));
-		mascot.cancelSpotOrder();
+	start(mascot: LapWalker, bounds: LapBounds, from: { x: number; y: number }, laps: number): void {
+		// Whichever side it is already nearer, so it sets off the short way to the first corner
+		// rather than crossing the whole window to start.
+		const direction: LapDirection = from.x - bounds.left <= bounds.right - from.x ? "left" : "right";
+		this.runs.set(mascot, { moves: lapMoves(bounds, from.x, direction), lapsRemaining: laps });
 	}
 
 	stop(mascot: LapWalker): void {
 		if (!this.runs.has(mascot)) return;
 		this.runs.delete(mascot);
-		mascot.cancelSpotOrder();
+		mascot.cancelScript();
 	}
 
 	isRunning(mascot: LapWalker): boolean {
 		return this.runs.has(mascot);
 	}
 
-	/**
-	 * One frame for one mascot. Issues the next corner whenever the previous order is done.
-	 *
-	 * `allowSurgery: false` matters: an ordinary order is willing to split a pane to reach a spot
-	 * nothing can stand at, which is right for a deliberate one-off but wrong four times a lap,
-	 * forever. A corner it genuinely cannot reach should end the lap, not rearrange the workspace.
-	 */
+	/** One frame for one mascot: hands over the next circuit whenever the last one has finished. */
 	tick(mascot: LapWalker): void {
 		const run = this.runs.get(mascot);
-		if (!run || mascot.hasSpotOrder) return;
-		const next = nextLapWaypoint(run);
-		if (!next) {
+		if (!run || mascot.hasScript) return;
+		if (run.lapsRemaining <= 0) {
 			this.runs.delete(mascot);
 			return;
 		}
-		mascot.orderToSpot(next, { allowSurgery: false, travelActions: LAP_TRAVEL_ACTIONS });
+		run.lapsRemaining--;
+		mascot.startScript(run.moves, LAP_TRAVEL_ACTIONS);
 	}
 }

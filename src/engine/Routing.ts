@@ -22,6 +22,16 @@ import type { CeilingLedge, FloorLedge, Ledge, Vec2, WallLedge } from "./types";
  * vocabulary: anything with no pack action behind it would be unplayable. */
 export type RouteVia = "walk" | "climb" | "traverse" | "jump" | "drop" | "chimney";
 
+/** One move of a script: a kind of movement, and where to aim it — the same shape a planned step
+ * has minus the ledge the router attaches. Lives here rather than with the code that consumes it
+ * because `RouteVia` does, and because a script is engine vocabulary, not pack vocabulary. See
+ * BehaviorAI.startScript and engine/laps.ts. */
+export interface ScriptedMove {
+	via: RouteVia;
+	x: number;
+	y: number;
+}
+
 export interface RouteStep {
 	via: RouteVia;
 	x: number;

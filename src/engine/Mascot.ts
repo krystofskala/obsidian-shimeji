@@ -16,6 +16,7 @@ import {
 import type { HotspotDef } from "../shimeji/types";
 import { ambientMood, ANGER_HEAT_PER_THROW, ANGER_THRESHOLD, decayAnger, MOOD_SPEED_MULTIPLIER, type Mood } from "./mood";
 import { TICKS_PER_SEC, type AmbientPointer, type EngineConfig, type Ledge, type MascotPhysics, type NativeStateName, type PointerState, type Vec2 } from "./types";
+import type { ScriptedMove } from "./Routing";
 import type { Random } from "./Random";
 
 /** The real engine's own constant (Dragged.java: `cursor.getY() + 120`) — the anchor sits this
@@ -139,6 +140,11 @@ export interface MascotDriver {
 	cancelSpotOrder?(): void;
 	/** Whether a "get to that spot" order is still outstanding, so a caller can wait for it. */
 	hasSpotOrder?(): boolean;
+	/** A fixed sequence of moves, outranking an order and ordinary behaviour alike. Invented; see
+	 * BehaviorAI.startScript, and laps.ts for the case that needs one. */
+	startScript?(moves: ScriptedMove[], travelActions?: string[]): void;
+	cancelScript?(): void;
+	hasScript?(): boolean;
 	/** Read-once: true exactly once, on whichever call first observes that an outstanding order
 	 * just completed. See BehaviorAI.consumeJustReachedSpot's own doc comment. */
 	consumeJustReachedSpot?(): boolean;
@@ -406,6 +412,19 @@ export class Mascot {
 	 * guessing how long a leg ought to take — a wall crossing runs at ~0.64px/tick. */
 	get hasSpotOrder(): boolean {
 		return this.driver?.hasSpotOrder?.() ?? false;
+	}
+
+	/** Hands the driver a fixed sequence of moves — see MascotDriver.startScript. */
+	startScript(moves: ScriptedMove[], travelActions?: string[]): void {
+		this.driver?.startScript?.(moves, travelActions);
+	}
+
+	cancelScript(): void {
+		this.driver?.cancelScript?.();
+	}
+
+	get hasScript(): boolean {
+		return this.driver?.hasScript?.() ?? false;
 	}
 
 	cancelSpotOrder(): void {

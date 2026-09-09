@@ -1,9 +1,10 @@
+import { CEILING_APPROACH_PX } from "../engine/Ledges";
 import { debugLog } from "../engine/debugLog";
 import type { Mascot } from "../engine/Mascot";
 import { updateWallCeilingAdherence } from "../engine/nativeBehaviors";
 import type { PaneActions } from "../engine/PaneActions";
 import type { Random } from "../engine/Random";
-import { DEFAULT_ROUTE_OPTIONS, edgeStepOffX, facingWall, fallDurationTicks, findRoute, planDropThrough, pointOn, routeDurationTicks, type RouteOptions, type RouteVia } from "../engine/Routing";
+import { DEFAULT_ROUTE_OPTIONS, edgeStepOffX, facingWall, fallDurationTicks, findRoute, planDropThrough, pointOn, routeDurationTicks, type RouteOptions, type RouteVia, type ScriptedMove } from "../engine/Routing";
 import { routeSpeedsFor, type RouteSpeeds } from "./packSpeeds";
 import type { EngineConfig, Ledge, PaneRef, Vec2 } from "../engine/types";
 import { ActionRunner, LOST_GROUND_REACH, type PushEnv } from "./ActionRunner";
@@ -200,10 +201,12 @@ export class BehaviorAI {
 	private spotSurgeries = 0;
 	/** Whether the current order may rearrange the layout at all — see orderToSpot's own option. */
 	private spotSurgeryAllowed = true;
-	/** Which pack actions the current order's floor legs should use, if it asked for something
-	 * other than the default — see orderToSpot's own option, and ROUTE_ACTIONS on why the default
-	 * is what it is. */
+	/** Which pack actions the current order's or script's floor legs should use, if it asked for
+	 * something other than the default — see orderToSpot's own option, and ROUTE_ACTIONS on why the
+	 * default is what it is. */
 	private spotTravelActions?: string[];
+	/** A fixed sequence of moves being performed in order — see startScript. */
+	private script?: { steps: ScriptedMove[]; index: number };
 	/**
 	 * What the mascot is currently *doing* about an outstanding order, when that is more than simply
 	 * walking there. Each phase is a piece of physical work with an animation behind it, which is the
@@ -269,6 +272,59 @@ export class BehaviorAI {
 	cancelSpotOrder(): void {
 		this.orderedSpot = undefined;
 		this.spotPhase = undefined;
+		this.spotTravelActions = undefined;
+	}
+
+	/**
+	 * **Invented.** A fixed sequence of moves to perform in order — no routing, no costs, no
+	 * arrival tolerance deciding whether a leg counted.
+	 *
+	 * A lap of the window is the case this exists for. It was first built on `orderToSpot`, which
+	 * was the wrong tool and said so in every symptom: the router optimises time, so it took the
+	 * floor rather than the ceiling; it has a 40px arrival tolerance, so corners were "near enough"
+	 * without being on the surface; and it can give up, so a mascot could be left holding an order
+	 * it would never finish. None of those questions arise for a circuit whose shape is the whole
+	 * point of it.
+	 *
+	 * `travelActions` names the pack actions the floor legs use, the same option `orderToSpot`
+	 * takes and for the same reason.
+	 */
+	startScript(steps: ScriptedMove[], travelActions?: string[]): void {
+		this.script = steps.length > 0 ? { steps, index: 0 } : undefined;
+		this.spotTravelActions = travelActions;
+		this.orderedSpot = undefined;
+		this.spotPhase = undefined;
+		this.followingMouse = false;
+		this.roamTarget = undefined;
+	}
+
+	cancelScript(): void {
+		this.script = undefined;
+		this.spotTravelActions = undefined;
+	}
+
+	get hasScript(): boolean {
+		return this.script !== undefined;
+	}
+
+	/**
+	 * Performs the next move of a script, or ends it when there are none left.
+	 *
+	 * Reached only on a tick where the previous move has finished (see the caller), so each step
+	 * gets a whole action to itself and they never overlap. A step that cannot be started at all —
+	 * a pack with no action for that kind of movement — ends the script rather than spinning: there
+	 * is no alternative route to fall back on, which is the point of a script.
+	 */
+	private driveScript(env: PushEnv, ledges: Ledge[]): void {
+		const script = this.script;
+		if (!script) return;
+		const step = script.steps[script.index];
+		if (!step) {
+			this.cancelScript();
+			return;
+		}
+		script.index++;
+		if (!this.startRouteAction(env, ledges, step.via, step.x, step.y, script.steps.length - script.index)) this.cancelScript();
 	}
 
 	get hasSpotOrder(): boolean {
@@ -745,11 +801,21 @@ export class BehaviorAI {
 		if (effectiveVia === "traverse" && targetY !== undefined && Math.abs(physics.y - targetY) > LOST_GROUND_REACH) {
 			physics.y = targetY;
 		}
+		// The same bridge in reverse, for leaving a ceiling onto the wall below it. ClimbWall is
+		// BorderType="Wall", so starting it from up on the ceiling — above the wall's own top end,
+		// by the very gap the clamp opened — loses its grip on the first tick exactly as the ceiling
+		// case does, and the mascot falls the height of the window instead of climbing down it.
+		// Only the from-above case: arriving at a wall from a floor below is an ordinary corner join
+		// that has always worked.
+		if (effectiveVia === "climb") {
+			const wall = ledges.find((l): l is Extract<Ledge, { kind: "wall" }> => l.kind === "wall" && Math.abs(l.x - targetX) <= LOST_GROUND_REACH);
+			if (wall && physics.y < wall.y1 && wall.y1 - physics.y <= CEILING_APPROACH_PX) physics.y = wall.y1;
+		}
 
 		// An order may name its own floor actions. Only floor legs, and only while that order is
 		// what is being driven: a climb or a chimney hop has exactly one action that performs it,
 		// and following/roaming legs are nobody's order to re-style.
-		const travelActions = effectiveVia === "walk" && this.orderedSpot && this.spotTravelActions ? this.spotTravelActions : ROUTE_ACTIONS[effectiveVia];
+		const travelActions = effectiveVia === "walk" && this.spotTravelActions ? this.spotTravelActions : ROUTE_ACTIONS[effectiveVia];
 		for (const name of travelActions) {
 			if (!this.pack.actions.has(name)) continue;
 			this.currentBehavior = attributeTo;
@@ -907,6 +973,10 @@ export class BehaviorAI {
 		 * Read unconditionally, and first, because the getter consumes the flag.
 		 */
 		if (this.runner.lostGround) {
+			// A script is a circuit, and a mascot that has just lost its grip is no longer on it —
+			// resuming the remaining moves from wherever it lands would carry on as if nothing had
+			// happened, mid-air step and all.
+			this.cancelScript();
 			this.startBehavior(this.forceFallBehavior(), env);
 			return;
 		}
@@ -954,6 +1024,15 @@ export class BehaviorAI {
 		// outstanding order must own the rest of this tick regardless of what driveSpotOrder
 		// returns — only a genuine give-up clears `this.orderedSpot` itself, which is what actually
 		// lets ordinary reselection resume, one tick later, correctly.
+		// A script outranks an order, and both outrank ordinary reselection. First because it is the
+		// stronger statement: an order says where to end up and leaves the how to the router, while
+		// a script says which moves to make and in what order, with nothing planned and nothing
+		// re-planned. See laps.ts for the case that needs one.
+		if (this.script) {
+			this.driveScript(env, ledges);
+			return;
+		}
+
 		if (this.orderedSpot) {
 			this.driveSpotOrder(env, ledges);
 			return;

@@ -6,6 +6,7 @@ import { BehaviorAI } from "./BehaviorAI";
 import { evaluateCondition, withLocals, type ExprContext } from "./Expression";
 import { pickLoopingPose } from "./poseUtil";
 import { createRuntimeContext } from "./RuntimeContext";
+import type { ScriptedMove } from "../engine/Routing";
 import { playPoseSound } from "./SoundPlayer";
 import type { MascotPack, PoseDef } from "./types";
 
@@ -120,6 +121,19 @@ export class PackDriver implements MascotDriver {
 
 	hasSpotOrder(): boolean {
 		return this.ai.hasSpotOrder;
+	}
+
+	/** Invented fixed sequence of moves — see BehaviorAI.startScript. */
+	startScript(moves: ScriptedMove[], travelActions?: string[]): void {
+		this.ai.startScript(moves, travelActions);
+	}
+
+	hasScript(): boolean {
+		return this.ai.hasScript;
+	}
+
+	cancelScript(): void {
+		this.ai.cancelScript();
 	}
 
 	cancelSpotOrder(): void {

@@ -1,5 +1,5 @@
 import { setVerboseLogging } from "./engine/debugLog";
-import { lapCorners } from "./engine/laps";
+import { lapMoves } from "./engine/laps";
 import { minClimbableY } from "./engine/Ledges";
 import { ANGER_DECAY_PER_SECOND, ANGER_THRESHOLD } from "./engine/mood";
 import { describeSurface } from "./engine/MovementAudit";
@@ -216,28 +216,19 @@ export function installDebugApi(
 			const viewport = mascot.getViewportSize();
 			const worldTop = stage.getWorldTop();
 			const standing = mascot.height * mascot.scale;
-			const corners = lapCorners({ left: 0, right: viewport.width, wallTop: minClimbableY(worldTop, standing), ceiling: worldTop, bottom: viewport.height });
+			const standingSize = mascot.height * mascot.scale;
+			const bounds = { left: 0, right: viewport.width, wallTop: minClimbableY(worldTop, standingSize), ceiling: worldTop, bottom: viewport.height };
 			const from = { x: mascot.physics.x, y: mascot.physics.y };
-			const attached = mascot.physics.currentFloor ?? mascot.physics.currentWall ?? mascot.physics.currentCeiling;
-			const opts = { arriveWithin: 40, travelTimeWeight: 0.05 };
+			const direction = from.x - bounds.left <= bounds.right - from.x ? "left" : "right";
 
-			console.info(`[obsidian-shimeji] lap for a ${Math.round(standing)}px mascot — window ${viewport.width}x${viewport.height}, worldTop ${Math.round(worldTop)}`);
-			console.info(`  mascot at (${Math.round(from.x)}, ${Math.round(from.y)}) on ${describeSurface(mascot.physics)}`);
-			// Planned as a chain — each leg from where the one before it ended, which is what the lap
-			// actually issues. Planning every corner from the mascot's current position instead
-			// reports legs it will never be asked to make, and marked one "UNREACHABLE" that the
-			// real sequence walks without trouble.
-			let legFrom = from;
-			let legOn = attached;
-			corners.forEach((corner, i) => {
-				const route = findRoute(ledges, legFrom, corner, legOn, opts);
-				const end = route.length > 0 ? route[route.length - 1] : legFrom;
-				const miss = Math.round(Math.hypot(end.x - corner.x, end.y - corner.y));
-				const via = route.map((s) => s.via).join(" -> ") || "none";
-				console.info(`  leg ${i} to (${Math.round(corner.x)}, ${Math.round(corner.y)}): [${via}] ends (${Math.round(end.x)}, ${Math.round(end.y)}), ${miss}px short${miss <= 40 ? "" : "   <-- UNREACHABLE"}`);
-				legFrom = { x: end.x, y: end.y };
-				if (route.length > 0) legOn = route[route.length - 1].ledge;
+			console.info(`[obsidian-shimeji] lap for a ${Math.round(standingSize)}px mascot — window ${viewport.width}x${viewport.height}, worldTop ${Math.round(worldTop)}`);
+			console.info(`  mascot at (${Math.round(from.x)}, ${Math.round(from.y)}) on ${describeSurface(mascot.physics)}, would set off ${direction}`);
+			// The moves themselves, not a planned route: a lap is scripted precisely so that nothing
+			// about it is up for negotiation, so what is worth printing is the script.
+			lapMoves(bounds, Math.round(from.x), direction).forEach((m, i) => {
+				console.info(`  ${i + 1}. ${m.via.padEnd(8)} -> (${Math.round(m.x)}, ${Math.round(m.y)})`);
 			});
+
 			const walls = ledges.filter((l): l is Extract<typeof l, { kind: "wall" }> => l.kind === "wall");
 			console.info(`  walls (${walls.length}): ${walls.map((w) => `${w.side}@${Math.round(w.x)} y${Math.round(w.y1)}..${Math.round(w.y2)} ${w.source}`).join(" | ") || "none"}`);
 			// The top leg of a lap lives or dies on these: a wall can only be climbed to
