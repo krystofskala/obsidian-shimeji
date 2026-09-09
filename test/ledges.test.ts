@@ -9,6 +9,7 @@ import {
 	withoutLedgesTooCloseToTop,
 	withoutWallsInUnusableEdgeStrips,
 } from "../src/engine/Ledges";
+import type { Ledge } from "../src/engine/types";
 
 const PANE_RECT = { left: 100, top: 300, right: 400, bottom: 580 };
 
@@ -31,6 +32,28 @@ describe("withoutWallsInUnusableEdgeStrips", () => {
 		expect(kept).toContainEqual({ kind: "wall", side: "right", x: 800, y1: 0, y2: 600, source: "window" });
 	});
 
+	it("trims a pane floor that runs past where a mascot could stand on it", () => {
+		// The layout this was reported from: the sidebar's panes start 8px in, so a 141px mascot
+		// walking to that end stood with its body reaching x=-62, more than half of it off the side
+		// of the window. Trimmed rather than dropped — only the overhanging end is unusable.
+		const kept = withoutWallsInUnusableEdgeStrips(insetLedges(), 800, 128);
+		const floor = kept.find((l) => l.kind === "floor" && l.source === "pane") as Extract<Ledge, { kind: "floor" }>;
+		expect(floor.x1).toBe(64);
+		expect(floor.x2).toBe(736);
+	});
+
+	it("leaves the window's own floor running to its own edge", () => {
+		// A mascot walking into the corner of its world and overhanging it slightly is ordinary
+		// shimeji behaviour, and the lap's corners depend on the floor reaching them.
+		const kept = withoutWallsInUnusableEdgeStrips(insetLedges(), 800, 128);
+		expect(kept).toContainEqual({ kind: "floor", y: 600, x1: 0, x2: 800, source: "window" });
+	});
+
+	it("drops a pane floor with nothing left of it once trimmed", () => {
+		const sliver = computeLedgesFromRects({ width: 800, height: 600 }, [{ rect: { left: 4, top: 300, right: 40, bottom: 560 }, source: "pane" as const }]);
+		expect(withoutWallsInUnusableEdgeStrips(sliver, 800, 128).some((l) => l.kind === "floor" && l.source === "pane")).toBe(false);
+	});
+
 	it("keeps a pane wall with real room beside it", () => {
 		const roomy = computeLedgesFromRects({ width: 800, height: 600 }, [{ rect: PANE_RECT, source: "pane" as const }]);
 		expect(paneWalls(withoutWallsInUnusableEdgeStrips(roomy, 800, 128))).toHaveLength(2);
@@ -42,10 +65,13 @@ describe("withoutWallsInUnusableEdgeStrips", () => {
 		expect(paneWalls(withoutWallsInUnusableEdgeStrips(midway, 800, 40))).toHaveLength(2);
 	});
 
-	it("leaves floors and ceilings untouched, however close to an edge they run", () => {
+	it("trims a pane's underside too, for the same reason as its top", () => {
+		// Unlike the vertical filter, which exempts ceilings because a hanging sprite grows downward
+		// away from the chrome. Horizontally a hanging mascot is centred on its anchor exactly as a
+		// standing one is, and overhangs the window edge just as far.
 		const kept = withoutWallsInUnusableEdgeStrips(insetLedges(), 800, 128);
-		expect(kept.some((l) => l.kind === "floor" && l.source === "pane")).toBe(true);
-		expect(kept.some((l) => l.kind === "ceiling" && l.source === "pane")).toBe(true);
+		const ceiling = kept.find((l) => l.kind === "ceiling" && l.source === "pane") as Extract<Ledge, { kind: "ceiling" }>;
+		expect([ceiling.x1, ceiling.x2]).toEqual([64, 736]);
 	});
 });
 

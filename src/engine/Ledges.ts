@@ -148,8 +148,10 @@ function bridgeNarrowGaps(ledges: Ledge[]): Ledge[] {
 export const CEILING_APPROACH_PX = 64;
 
 /**
- * Drops a pane's side wall when it stands so close to a window edge that clinging to it would put
- * the mascot mostly outside the window.
+ * Keeps a mascot off the parts of a pane that would put it mostly outside the window.
+ *
+ * Side walls are dropped outright; floors and undersides are trimmed at the ends, since only the
+ * overhanging part of them is unusable and the rest is ordinary surface.
  *
  * Reported from the wild: a theme that insets its panes leaves a sliver between the outermost pane
  * and the edge of Obsidian. `computeLedgesFromRects` builds a wall for any pane edge that is not
@@ -168,10 +170,36 @@ export const CEILING_APPROACH_PX = 64;
  */
 export function withoutWallsInUnusableEdgeStrips(ledges: Ledge[], viewportWidth: number, standingWidth: number): Ledge[] {
 	const minStrip = standingWidth / 2;
-	return ledges.filter((ledge) => {
-		if (ledge.kind !== "wall" || ledge.source !== "pane") return true;
-		return ledge.x >= minStrip && ledge.x <= viewportWidth - minStrip;
-	});
+	const out: Ledge[] = [];
+	for (const ledge of ledges) {
+		if (ledge.source !== "pane") {
+			out.push(ledge);
+			continue;
+		}
+		if (ledge.kind === "wall") {
+			if (ledge.x >= minStrip && ledge.x <= viewportWidth - minStrip) out.push(ledge);
+			continue;
+		}
+		// A pane's floor and underside get their ends trimmed rather than the whole surface dropped:
+		// only the part within half a sprite of the window edge is unusable, and the rest is
+		// perfectly good ground. A theme that insets its panes leaves them starting a few pixels in —
+		// measured at x=8 on the layout this was reported from — so a 141px mascot walking to that
+		// end stands with its body reaching x=-62, more than half of itself off the side of the
+		// window.
+		//
+		// Undersides get the same treatment as tops, unlike the vertical filter above where hanging
+		// needs no buffer at all. That exemption is about the sprite growing *downward* from a
+		// ceiling anchor, away from the chrome; horizontally a hanging mascot is centred on its
+		// anchor exactly as a standing one is, and overhangs the window edge just as far.
+		//
+		// Pane surfaces only. The window's own floor runs to the window's own edge by definition,
+		// and a mascot walking into the corner of its world and overhanging it slightly is ordinary
+		// shimeji behaviour, not the bug being fixed here.
+		const x1 = Math.max(ledge.x1, minStrip);
+		const x2 = Math.min(ledge.x2, viewportWidth - minStrip);
+		if (x2 - x1 > 0) out.push(x1 === ledge.x1 && x2 === ledge.x2 ? ledge : { ...ledge, x1, x2 });
+	}
+	return out;
 }
 
 /**
