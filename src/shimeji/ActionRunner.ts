@@ -810,6 +810,9 @@ export class ActionRunner {
 	private tickMove(frame: Frame, env: PushEnv, dt: number, ledges: Ledge[]): boolean {
 		const poses = frame.poses;
 		if (poses.length === 0) return true;
+		// Cleared up front and set again below only by a targeted vertical move, so walking away from
+		// a wall never leaves the mascot rendered on its head.
+		env.mascot.climbArtReversed = false;
 		const pose = poses[frame.poseIndex];
 		this.showPose(env.mascot, pose);
 		const physics = env.mascot.physics;
@@ -863,6 +866,12 @@ export class ActionRunner {
 				// one gait cycle serves walking either way horizontally.
 				const towards = Math.sign(targetY - prev) || 1;
 				physics.y += Math.abs(pose.velocity.y) * towards * dt * speed;
+				// Which way this pose was *drawn* travelling, so a directional climb animation can be
+				// mirrored when it is used the other way. The classic climb is a grip and reads
+				// correctly either way, so nothing acts on this unless the character opts in — see
+				// Mascot.directionalClimbArt.
+				const authored = Math.sign(pose.velocity.y);
+				if (authored !== 0) env.mascot.climbArtReversed = towards !== authored;
 				if ((prev - targetY) * (physics.y - targetY) <= 0) {
 					physics.y = targetY;
 					return true;

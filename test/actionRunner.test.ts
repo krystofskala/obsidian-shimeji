@@ -37,6 +37,7 @@ function makeFakeMascot() {
 		getSameCharacterCount() {
 			return 1;
 		},
+		climbArtReversed: false,
 		affordances: [] as string[],
 		startNamedBehavior(_name: string) {},
 		selfDestruct() {},
@@ -197,6 +198,28 @@ describe("ActionRunner", () => {
 			runner.start("ClimbWall", env, { TargetY: "600" });
 			runner.tick(env, 0.1, [wall]);
 			expect(mascot.physics.y).toBeGreaterThan(500);
+		});
+
+		it("marks the art reversed only when travelling against the way it was drawn", () => {
+			// The poses above are authored upward (-100). Climbing up is the drawn direction, so nothing
+			// is mirrored; climbing down is the same art used the other way, which a character whose climb
+			// is a *run* has to be turned around for. Whether anything acts on it is that character's own
+			// choice — see Mascot.directionalClimbArt.
+			const up = makeFakeMascot();
+			up.physics.y = 500;
+			const upEnv = envFor(pack, up);
+			const upRunner = new ActionRunner(pack);
+			upRunner.start("ClimbWall", upEnv, { TargetY: "400" });
+			upRunner.tick(upEnv, 0.1, [wall]);
+			expect(up.climbArtReversed).toBe(false);
+
+			const down = makeFakeMascot();
+			down.physics.y = 500;
+			const downEnv = envFor(pack, down);
+			const downRunner = new ActionRunner(pack);
+			downRunner.start("ClimbWall", downEnv, { TargetY: "600" });
+			downRunner.tick(downEnv, 0.1, [wall]);
+			expect(down.climbArtReversed).toBe(true);
 		});
 
 		it("arrives exactly on the target rather than overshooting it", () => {

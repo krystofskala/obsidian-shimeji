@@ -56,6 +56,12 @@ export interface ShimejiSettings {
 	/** Behaviors the user has switched off from a mascot's own menu, keyed by pack id — real
 	 * `Toggleable` behaviors plus `Main.setMascotBehaviorEnabled`'s persisted state. */
 	disabledBehaviors: Record<string, string[]>;
+	/** Invented, per character: whether this one's climb art is *directional*, drawn running one way
+	 * up a wall so it has to be mirrored to travel the other. Off for anything not listed, and it has
+	 * to be — the classic shimeji climb is a grip, drawn facing the wall and equally right going up or
+	 * down, and mirroring it would stand the mascot on its head. A character that runs along walls
+	 * instead has art that genuinely points somewhere. See Mascot.directionalClimbArt. */
+	directionalClimbArt: Record<string, boolean>;
 	chaseMouseEnabled: boolean;
 	/** Real shimeji-ee's own `sounds` setting, read by `Sounds.isEnabled()` and checked before
 	 * every single playback. Off by default here (the original defaults it on) — a note-taking app
@@ -237,6 +243,7 @@ export const DEFAULT_SETTINGS: ShimejiSettings = {
 	allowBreeding: true,
 	allowTransients: true,
 	disabledBehaviors: {},
+	directionalClimbArt: {},
 	chaseMouseEnabled: true,
 	soundsEnabled: false,
 	soundVolume: 70,
@@ -579,6 +586,25 @@ export class ShimejiSettingTab extends PluginSettingTab {
 									this.plugin.respawnWithCurrentSettings();
 								}),
 							);
+						// Per character rather than global: the two climbing conventions are genuinely
+						// different art, and a pack drawn either way is correct on its own terms.
+						setting.addExtraButton((btn) =>
+							btn
+								.setIcon("flip-vertical")
+								.setTooltip(
+									this.plugin.settings.directionalClimbArt[pack.id]
+										? "Climb art is directional: mirrored when travelling the other way. Click for the classic grip climb, never mirrored."
+										: "Climb art is a grip: never mirrored, right way up either direction. Click if this character runs along walls instead.",
+								)
+								.onClick(async () => {
+									const on = !this.plugin.settings.directionalClimbArt[pack.id];
+									if (on) this.plugin.settings.directionalClimbArt[pack.id] = true;
+									else delete this.plugin.settings.directionalClimbArt[pack.id];
+									await this.plugin.saveSettings();
+									this.plugin.applyDirectionalClimbArt();
+									this.display();
+								}),
+						);
 						// Enabling/disabling a pack is a plain toggle either platform can do; editing one
 						// opens the same desktop-only wizard as "Create a new character" above.
 						if (!Platform.isMobile) {

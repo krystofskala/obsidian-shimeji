@@ -217,6 +217,21 @@ export class Mascot {
 	stateElapsedMs = 0;
 	scale = 1;
 	/**
+	 * Whether this character's climb art is *directional* — drawn running one way up the wall, so it
+	 * has to be mirrored to travel the other.
+	 *
+	 * Off by default, and it must be: the classic shimeji climb is a grip, drawn facing the wall and
+	 * equally correct going up or down, and flipping it would put the mascot on its head. A character
+	 * that runs along walls instead (chakra-walking, say) has art that genuinely points somewhere, and
+	 * for that one this is on. Per character, set from settings when its pack is attached.
+	 */
+	directionalClimbArt = false;
+	/** Set by the interpreter while a vertical wall move is travelling against the direction its own
+	 * poses were authored in — see ActionRunner's tickMove. Only ever consulted when
+	 * `directionalClimbArt` is on. */
+	climbArtReversed = false;
+
+	/**
 	 * When set, the only world this mascot has. Stage hands it these surfaces instead of the
 	 * workspace's, which is what confines a mascot to the room (see room/Residency.ts).
 	 *
@@ -875,7 +890,10 @@ export class Mascot {
 		// Guarded on `isDraggedUpsideDown` (which requires isDragging) rather than the raw flag, so a
 		// grab that sets the orientation and then aborts before the drag starts can't leave a
 		// standing mascot rendered on its head.
-		const flips = [this.physics.facing === 1 ? "scaleX(-1)" : "", this.isDraggedUpsideDown ? "scaleY(-1)" : ""].filter(Boolean);
+		// A directional climb animation mirrors vertically when travelling against the way its art was
+		// drawn — see `climbArtReversed`. Composes with the horizontal mirror rather than replacing it:
+		// a character running down the right-hand wall is flipped on both axes.
+		const flips = [this.physics.facing === 1 ? "scaleX(-1)" : "", this.isDraggedUpsideDown || this.climbArtReversed ? "scaleY(-1)" : ""].filter(Boolean);
 		this.inner.style.transform = flips.length > 0 ? flips.join(" ") : "none";
 	}
 

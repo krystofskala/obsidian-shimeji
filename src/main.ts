@@ -1753,6 +1753,15 @@ export default class ShimejiPlugin extends Plugin {
 		this.laps.start(mascot, this.lapBounds(mascot), { x: mascot.physics.x, y: mascot.physics.y }, laps);
 	}
 
+	/** Pushes the per-character climb-art choice to mascots already on screen, so toggling it in
+	 * settings is visible immediately rather than only for the next one spawned. */
+	applyDirectionalClimbArt(): void {
+		for (const mascot of this.stage?.getMascots() ?? []) {
+			const packId = this.packIdOf(mascot);
+			mascot.directionalClimbArt = packId !== null && this.settings.directionalClimbArt[packId] === true;
+		}
+	}
+
 	/** Pushes the current speech settings to the bubbles. */
 	applySpeechSettings(): void {
 		this.speech.setEnabled(this.settings.speechEnabled);
@@ -1850,6 +1859,7 @@ export default class ShimejiPlugin extends Plugin {
 				this.mascotRng.set(mascot, rng);
 			}
 			mascot.attachDriver(new PackDriver(pack, this.engineConfig, rng, this.paneActionsGate));
+			mascot.directionalClimbArt = this.settings.directionalClimbArt[pack.id] === true;
 			mascot.setDisabledBehaviors(new Set(this.settings.disabledBehaviors[pack.id] ?? []));
 		} else {
 			mascot.detachDriver();
