@@ -169,6 +169,47 @@ describe("ActionRunner", () => {
 		expect(elapsedMs).toBeGreaterThanOrEqual(4000);
 	});
 
+	describe("a targeted vertical Move", () => {
+		// ClimbWall's poses are all upward in every pack measured, because a real pack never climbs
+		// down a wall — it lets go and falls. The router does plan descents, so the axis has to work
+		// both ways from one set of upward poses, exactly as one gait cycle serves walking either way.
+		const pack: MascotPack = {
+			...NOOP_PACK,
+			actions: new Map([["ClimbWall", action({ name: "ClimbWall", type: "Move", borderType: "Wall", animations: animOf([{ image: "/climb.png", durationMs: 1000, velocity: { x: 0, y: -100 } }]) })]]),
+		};
+		const wall = { kind: "wall" as const, side: "left" as const, x: 0, y1: 0, y2: 1000, source: "window" as const };
+
+		it("climbs up toward a target above, as its poses are authored", () => {
+			const runner = new ActionRunner(pack);
+			const mascot = makeFakeMascot();
+			mascot.physics.y = 500;
+			const env = envFor(pack, mascot);
+			runner.start("ClimbWall", env, { TargetY: "400" });
+			runner.tick(env, 0.1, [wall]);
+			expect(mascot.physics.y).toBeLessThan(500);
+		});
+
+		it("climbs down toward a target below, from those same upward poses", () => {
+			const runner = new ActionRunner(pack);
+			const mascot = makeFakeMascot();
+			mascot.physics.y = 500;
+			const env = envFor(pack, mascot);
+			runner.start("ClimbWall", env, { TargetY: "600" });
+			runner.tick(env, 0.1, [wall]);
+			expect(mascot.physics.y).toBeGreaterThan(500);
+		});
+
+		it("arrives exactly on the target rather than overshooting it", () => {
+			const runner = new ActionRunner(pack);
+			const mascot = makeFakeMascot();
+			mascot.physics.y = 500;
+			const env = envFor(pack, mascot);
+			runner.start("ClimbWall", env, { TargetY: "505" });
+			expect(runner.tick(env, 1, [wall])).toBe(true);
+			expect(mascot.physics.y).toBe(505);
+		});
+	});
+
 	it("runs a Sequence's children in order", () => {
 		const pack: MascotPack = {
 			...NOOP_PACK,

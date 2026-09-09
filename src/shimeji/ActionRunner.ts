@@ -854,7 +854,15 @@ export class ActionRunner {
 
 			if (targetY !== undefined) {
 				const prev = physics.y;
-				physics.y += pose.velocity.y * dt * speed;
+				// **Invented**, and the vertical counterpart of the facing flip above. Authored climb
+				// velocities are all upward — the bundled pack's ClimbWall is `0,-1`/`0,-2`, and every
+				// custom one measured is negative too — because a real pack never climbs *down* a
+				// wall: it lets go and falls (see FallFromWall). The router does plan descents, so
+				// without this a leg aimed below the mascot climbed away from its own target forever.
+				// Magnitude is the pose's own; only the direction comes from the target, exactly as
+				// one gait cycle serves walking either way horizontally.
+				const towards = Math.sign(targetY - prev) || 1;
+				physics.y += Math.abs(pose.velocity.y) * towards * dt * speed;
 				if ((prev - targetY) * (physics.y - targetY) <= 0) {
 					physics.y = targetY;
 					return true;
