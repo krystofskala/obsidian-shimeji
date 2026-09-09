@@ -1,4 +1,4 @@
-import { findFloorBelow } from "./Ledges";
+import { CEILING_APPROACH_PX, findFloorBelow } from "./Ledges";
 import type { CeilingLedge, FloorLedge, Ledge, Vec2, WallLedge } from "./types";
 
 /**
@@ -296,6 +296,36 @@ function transfersFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts
 			const at = { x: clamp(ledge.x, other.x1, other.x2), y: other.y };
 			out.push({ from, to: other, at, via: alongVia(other) });
 			continue;
+		}
+
+		// The last stretch onto a ceiling sitting above a wall's own top, which no corner join can
+		// express. Walls are deliberately clamped to `worldTop + CEILING_APPROACH_PX` to keep a
+		// climbing mascot's sprite out of Obsidian's title bar (see withoutLedgesTooCloseToTop), so
+		// a wall stops short of the ceiling above it by exactly that much and `spansY` can never
+		// match. The pack bridges the identical gap in its own ClimbAlongWall/ClimbIEWall — climb to
+		// `workArea.top+64`, then a discrete Offset onto the ceiling, no ledge check involved — and
+		// the clamp is 64 precisely so that authored move keeps working.
+		//
+		// Without the equivalent edge here the router cannot see the top of the window at all: an
+		// order aimed along it routed down one wall, across the floor and up the other, and a mascot
+		// that climbed up there under its own steam found nothing to hand off to and sat in the
+		// corner — reported during ordinary idle movement, not only while running laps.
+		//
+		// Both directions, because coming back down matters as much as getting up: without the
+		// return edge a mascot could reach the ceiling and then only leave it by letting go.
+		if (ledge.kind === "wall" && other.kind === "ceiling" && spansX(other, ledge.x)) {
+			const reach = ledge.y1 - other.y;
+			if (reach > 0 && reach <= CEILING_APPROACH_PX) {
+				out.push({ from: { x: ledge.x, y: ledge.y1 }, to: other, at: { x: clamp(ledge.x, other.x1, other.x2), y: other.y }, via: "traverse" });
+				continue;
+			}
+		}
+		if (ledge.kind === "ceiling" && other.kind === "wall" && spansX(ledge, other.x)) {
+			const reach = other.y1 - ledge.y;
+			if (reach > 0 && reach <= CEILING_APPROACH_PX) {
+				out.push({ from: { x: clamp(other.x, ledge.x1, ledge.x2), y: ledge.y }, to: other, at: { x: other.x, y: other.y1 }, via: "climb" });
+				continue;
+			}
 		}
 
 		// Kicking off one wall to the one facing it — how a mascot gets up a corridor quickly instead

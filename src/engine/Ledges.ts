@@ -145,7 +145,7 @@ function bridgeNarrowGaps(ledges: Ledge[]): Ledge[] {
  * ceiling handoff becomes unreachable. Capping at the pack's own 64 restores it, while a mascot
  * shorter than that (a small pack, or scaled down) still gets exactly its own smaller buffer.
  */
-const CEILING_APPROACH_PX = 64;
+export const CEILING_APPROACH_PX = 64;
 
 /**
  * Drops a pane's side wall when it stands so close to a window edge that clinging to it would put

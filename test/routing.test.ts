@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { findRoute, ledgeUnder, planDropThrough, pointOn } from "../src/engine/Routing";
-import { computeLedgesFromRects } from "../src/engine/Ledges";
+import { computeLedgesFromRects, withoutLedgesTooCloseToTop } from "../src/engine/Ledges";
 import type { Ledge } from "../src/engine/types";
 
 /**
@@ -176,6 +176,41 @@ describe("findRoute", () => {
 				expect(snapped.y).toBeCloseTo(step.y, 6);
 			}
 		}
+	});
+});
+
+describe("the wall-top to ceiling handoff", () => {
+	// The real geometry that produced the bug. withoutLedgesTooCloseToTop clamps every wall to
+	// worldTop + CEILING_APPROACH_PX so a climbing sprite stays out of Obsidian's title bar, which
+	// strands the window's own ceiling 64px above the top of every wall. spansY tolerates 6px, so
+	// no corner join could bridge that, and the whole top edge of the window was invisible to the
+	// router: a mascot climbed to the top of a wall and had nowhere left to go.
+	const clamped = (): Ledge[] => withoutLedgesTooCloseToTop(bareWindow(), VIEWPORT.top, 120);
+
+	it("gets onto a ceiling stranded above the wall it is already near the top of", () => {
+		// Started near the wall's top, which is exactly where a mascot that climbed up under its own
+		// steam ends up — and where it used to have nowhere left to go.
+		const route = findRoute(clamped(), { x: 0, y: 110 }, { x: 600, y: VIEWPORT.top });
+		expect(route.some((s) => s.via === "traverse")).toBe(true);
+		expect(route[route.length - 1].y).toBe(VIEWPORT.top);
+	});
+
+	it("still declines the climb when the ceiling is a long way up", () => {
+		// Not a missing edge — an honest price. Climbing is 0.64px/tick, so hauling up a 600px wall
+		// to reach the ceiling is about 40 seconds, and travelTimeWeight is 2. From the floor the
+		// router is right that it is not worth it; the edge exists for a mascot already up there.
+		const route = findRoute(clamped(), { x: 0, y: 700 }, { x: 600, y: VIEWPORT.top });
+		expect(route.some((s) => s.via === "traverse")).toBe(false);
+	});
+
+	it("invents no handoff to a ceiling beyond the pack's own reach", () => {
+		// The 64px is not a tolerance — it is the exact distance ClimbAlongWall's own Offset covers.
+		// A ceiling further off has to be reached another way, or not at all.
+		const farCeiling: Ledge[] = [
+			{ kind: "wall", side: "left", x: 0, y1: 300, y2: 800, source: "window" },
+			{ kind: "ceiling", y: 100, x1: 0, x2: 1200, source: "window" },
+		];
+		expect(findRoute(farCeiling, { x: 0, y: 700 }, { x: 600, y: 100 }).some((s) => s.via === "traverse")).toBe(false);
 	});
 });
 
