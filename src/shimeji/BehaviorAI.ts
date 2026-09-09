@@ -6,7 +6,7 @@ import type { Random } from "../engine/Random";
 import { DEFAULT_ROUTE_OPTIONS, edgeStepOffX, facingWall, fallDurationTicks, findRoute, planDropThrough, pointOn, routeDurationTicks, type RouteOptions, type RouteVia } from "../engine/Routing";
 import { routeSpeedsFor, type RouteSpeeds } from "./packSpeeds";
 import type { EngineConfig, Ledge, PaneRef, Vec2 } from "../engine/types";
-import { ActionRunner, type PushEnv } from "./ActionRunner";
+import { ActionRunner, LOST_GROUND_REACH, type PushEnv } from "./ActionRunner";
 import { evaluateCondition } from "./Expression";
 import { createRuntimeContext, type AmbientPointer } from "./RuntimeContext";
 import type { BehaviorDef, MascotPack } from "./types";
@@ -728,6 +728,23 @@ export class BehaviorAI {
 		// own y would cross the whole corridor in one constant-speed move, which reads as levitating
 		// rather than as kicking off a wall.
 		const hopY = effectiveVia === "chimney" && targetY !== undefined ? physics.y + Math.sign(targetY - physics.y) * Math.min(CHIMNEY_HOP_PX, Math.abs(targetY - physics.y)) : targetY;
+
+		// The last stretch onto a ceiling, closed before the move that travels along it begins.
+		//
+		// The pack does exactly this in its own ClimbAlongWall — `ClimbWall` up to
+		// `workArea.top+64`, then a discrete `Offset Y="-64"`, and only then `ClimbCeiling` — and it
+		// has to, because ClimbCeiling is BorderType="Ceiling": starting it while still at the top
+		// of the wall, 64px below, makes the runner's own isBorderLost report the ceiling gone on
+		// the very first tick, which BehaviorAI turns into a forced Fall. Reported as exactly that:
+		// the mascot runs up the wall and then drops straight back down.
+		//
+		// Needed now because the route graph offers the wall-top-to-ceiling handoff (see Routing's
+		// own transfer for it) while nothing was performing it — the plan was reachable and the
+		// execution was not. Snapped rather than animated, matching the pack: `Offset` is
+		// instantaneous there too.
+		if (effectiveVia === "traverse" && targetY !== undefined && Math.abs(physics.y - targetY) > LOST_GROUND_REACH) {
+			physics.y = targetY;
+		}
 
 		// An order may name its own floor actions. Only floor legs, and only while that order is
 		// what is being driven: a climb or a chimney hop has exactly one action that performs it,

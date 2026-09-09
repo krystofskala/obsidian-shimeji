@@ -226,7 +226,7 @@ function parseSidebarMode(raw: string): SidebarMode | undefined {
  * Deliberately more generous than updateWallCeilingAdherence's own 4px (detecting a *new*
  * attachment), matching the native fallback state machine's own climb-wall tuning, so ordinary
  * per-tick float drift while climbing can't spuriously read as having lost the wall. */
-const LOST_GROUND_REACH = 8;
+export const LOST_GROUND_REACH = 8;
 
 /** How long a randomly-picked animation option (see the wizard's AnimationOptionsModal) stays
  * locked in before it becomes eligible to be re-rolled — real elapsed time the action is actually
