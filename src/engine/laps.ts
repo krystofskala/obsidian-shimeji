@@ -18,7 +18,13 @@ import type { Vec2 } from "./types";
 export interface LapBounds {
 	left: number;
 	right: number;
-	top: number;
+	/** The highest a mascot's anchor may climb on a wall — see Ledges' minClimbableY. Where the top
+	 * corners sit, since that is the top of the surface they are corners *of*. */
+	wallTop: number;
+	/** The ceiling itself, which sits above `wallTop` by the handoff distance the pack's own
+	 * ClimbAlongWall covers with a discrete Offset. The crossing happens here, not at wallTop:
+	 * midway along the window that height is open air, and only the ceiling reaches it. */
+	ceiling: number;
 	bottom: number;
 }
 
@@ -47,13 +53,26 @@ export interface LapRun {
 export function lapCorners(bounds: LapBounds, margin = 0): Vec2[] {
 	const left = bounds.left + margin;
 	const right = bounds.right - margin;
-	const top = bounds.top + margin;
+	const top = bounds.wallTop + margin;
 	const bottom = bounds.bottom - margin;
+	const middle = (left + right) / 2;
 	return [
 		{ x: left, y: bottom },
 		{ x: left, y: top },
+		// Midway along each horizontal edge, and the reason the lap holds its shape at all. With
+		// only the four corners the router is free to answer "get from one wall top to the other"
+		// however it likes, and it costs a route in ticks — so it went down, across the floor and
+		// up the far side, which is quicker and is not a lap. A point halfway along the ceiling can
+		// be reached by exactly one surface, so the crossing stops being a matter of price.
+		//
+		// This is the general shape of "go *this* way regardless of speed" in a router that only
+		// understands cost: constrain the path with somewhere it must pass through, rather than
+		// trying to argue with the arithmetic. A slow character will take minutes over a lap, which
+		// is the honest answer for a slow character rather than a reason to reroute it.
+		{ x: middle, y: bounds.ceiling },
 		{ x: right, y: top },
 		{ x: right, y: bottom },
+		{ x: middle, y: bottom },
 	];
 }
 

@@ -1746,7 +1746,7 @@ export default class ShimejiPlugin extends Plugin {
 		// this to the ceiling (see withoutLedgesTooCloseToTop), so aiming at the ceiling line set a
 		// target no climb could ever reach — the mascot went as high as the wall allowed and then
 		// sat in the top corner holding an order it could not finish.
-		return { left: 0, right: viewport.width, top: minClimbableY(worldTop, mascot.height * mascot.scale), bottom: viewport.height };
+		return { left: 0, right: viewport.width, wallTop: minClimbableY(worldTop, mascot.height * mascot.scale), ceiling: worldTop, bottom: viewport.height };
 	}
 
 	private startLaps(mascot: Mascot, laps: number): void {

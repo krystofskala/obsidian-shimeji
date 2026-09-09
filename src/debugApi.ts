@@ -216,7 +216,7 @@ export function installDebugApi(
 			const viewport = mascot.getViewportSize();
 			const worldTop = stage.getWorldTop();
 			const standing = mascot.height * mascot.scale;
-			const corners = lapCorners({ left: 0, right: viewport.width, top: minClimbableY(worldTop, standing), bottom: viewport.height });
+			const corners = lapCorners({ left: 0, right: viewport.width, wallTop: minClimbableY(worldTop, standing), ceiling: worldTop, bottom: viewport.height });
 			const from = { x: mascot.physics.x, y: mascot.physics.y };
 			const attached = mascot.physics.currentFloor ?? mascot.physics.currentWall ?? mascot.physics.currentCeiling;
 			const opts = { arriveWithin: 40, travelTimeWeight: 0.05 };
