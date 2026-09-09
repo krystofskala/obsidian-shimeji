@@ -184,6 +184,16 @@ describe("dropping off a ledge", () => {
 		}
 
 		expect(leftTheLedge).toBe(true);
+		// The order reports itself done once the mascot is within SPOT_ARRIVAL_PX of the target, and
+		// a hop off the edge is still in the air at that moment — it rises before it falls, so it
+		// lands a few ticks later than a straight drop of the same height would. What this test is
+		// named for is that it leaves the ledge and comes down, so let the fall finish and check it
+		// actually rests on the floor.
+		for (let i = 0; i < 120 && !physics.grounded; i++) {
+			ai.tick(mascot, 0.04, ledges, { x: 0, y: 0, dx: 0, dy: 0 }, DEFAULT_ENGINE_CONFIG);
+			mascot.stateElapsedMs += 40;
+		}
+		expect(physics.grounded).toBe(true);
 		expect(physics.y).toBe(1392);
 	});
 

@@ -17,10 +17,18 @@ import type { CeilingLedge, FloorLedge, Ledge, Vec2, WallLedge } from "./types";
  * navigation mesh, so a route can never describe a surface the mascot cannot actually stand on.
  */
 
-/** How a mascot got to a step's point from the previous one. Each maps to a real pack action —
- * see BehaviorAI's route execution — which is why the set is exactly these five and not a richer
- * vocabulary: anything with no pack action behind it would be unplayable. */
-export type RouteVia = "walk" | "climb" | "traverse" | "jump" | "drop" | "chimney";
+/**
+ * How a mascot got to a step's point from the previous one. Most map to a real pack action — see
+ * BehaviorAI's route execution — which is why the vocabulary is this small: anything with no way to
+ * perform it would be unplayable.
+ *
+ * `drop` and `hop` are the two exceptions, and they are both ways down off an edge, kept separate because they are genuinely
+ * different moves and a route should be able to pick either. A drop is letting go: straight down,
+ * landing directly below. A hop is pushing off: a real ballistic arc that carries sideways as it
+ * falls, which is how the pack's own JumpFromLeftEdgeOfIE leaves a pane. Neither is a pack action —
+ * both are the absence of holding on, with and without a shove.
+ */
+export type RouteVia = "walk" | "climb" | "traverse" | "jump" | "drop" | "hop" | "chimney";
 
 /** One move of a script: a kind of movement, and where to aim it — the same shape a planned step
  * has minus the ledge the router attaches. Lives here rather than with the code that consumes it
@@ -64,6 +72,9 @@ export interface RouteOptions {
 	 * Defaults are measured from the standard pack. A pack whose animations differ can pass its own.
 	 */
 	speeds: { walk: number; climb: number; traverse: number; jump: number };
+	/** The shove a `hop` leaves an edge with, px/tick, matching how a pack authors InitialVX/VY.
+	 * Sideways is signed by the direction of travel at use; up is always up. */
+	hop: { vx: number; vy: number };
 	/** px/tick², matching the pack's own `Falling` Gravity, so a drop is costed by how long the fall
 	 * actually takes: distance d under constant acceleration takes sqrt(2d/g) ticks, which is
 	 * sublinear — long drops are proportionally *cheaper*, which is exactly why they are worth
@@ -135,6 +146,10 @@ export const DEFAULT_ROUTE_OPTIONS: RouteOptions = {
 	maxJumpDx: 220,
 	maxJumpUp: 130,
 	speeds: { walk: 8, climb: 0.64, traverse: 0.64, jump: 20 },
+	// The bundled pack's own JumpFromLeftEdgeOfIE launches at `-15-random*5` sideways and
+	// `-20-random*5` up. Taken as the midpoint of those, so a routed hop looks like the jump the
+	// pack already performs rather than a second, tamer thing.
+	hop: { vx: 17, vy: 22 },
 	gravity: 2,
 	jumpOverhead: 6,
 	chimneyHopUp: 120,
@@ -390,6 +405,27 @@ function transfersFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts
 			const below = findFloorBelow(ledges, offX, ledge.y + 1);
 			if (!below) continue;
 			out.push({ from: { x: ledge[end], y: ledge.y }, to: below, at: pointOn(below, goal), via: "drop" });
+
+			// The same edge, taken with a shove. A drop lands directly below; a hop keeps its
+			// launch velocity for the whole flight, so where it lands has to be *solved* rather
+			// than looked up — flight time to each floor's height, then how far sideways the launch
+			// has carried by then.
+			//
+			// Only the first floor the arc actually meets is offered, not every floor whose span
+			// happens to contain the landing point: a hop cannot pass through the one above on its
+			// way to the one below, and offering that would plan a route through solid surfaces.
+			const dir = end === "x1" ? -1 : 1;
+			let bestHop: { to: FloorLedge; at: Vec2 } | undefined;
+			for (const other of ledges) {
+				if (other === ledge || other.kind !== "floor") continue;
+				const dy = other.y - ledge.y;
+				if (dy <= 0) continue;
+				if (bestHop && other.y >= bestHop.to.y) continue;
+				const landX = offX + dir * opts.hop.vx * hopFlightTicks(dy, opts);
+				if (landX < other.x1 - JOIN_EPS || landX > other.x2 + JOIN_EPS) continue;
+				bestHop = { to: other, at: { x: clamp(landX, other.x1, other.x2), y: other.y } };
+			}
+			if (bestHop) out.push({ from: { x: ledge[end], y: ledge.y }, to: bestHop.to, at: bestHop.at, via: "hop" });
 		}
 	}
 
@@ -439,6 +475,19 @@ export function edgeStepOffX(ledges: Ledge[], floor: FloorLedge, end: "x1" | "x2
  * difference of more than an order of magnitude, and the difference between an order that takes
  * seconds and one that takes minutes.
  */
+/**
+ * How long a hop stays in the air before falling `dy`, in ticks.
+ *
+ * The launch is upward, so the mascot rises before it descends and the flight is longer than a
+ * plain fall of the same height — solving `dy = -u*t + g*t^2/2` for the positive root rather than
+ * `sqrt(2*dy/g)`. That extra time is the whole reason a hop reaches sideways at all, so costing it
+ * as a drop would both under-price the move and put the landing in the wrong place.
+ */
+function hopFlightTicks(dy: number, opts: RouteOptions): number {
+	const u = opts.hop.vy;
+	return (u + Math.sqrt(u * u + 2 * opts.gravity * Math.max(0, dy))) / opts.gravity;
+}
+
 function stepCost(via: RouteVia, from: Vec2, to: Vec2, opts: RouteOptions, along?: Ledge, ledges?: Ledge[]): number {
 	const d = distance(from, to);
 	switch (via) {
@@ -454,6 +503,11 @@ function stepCost(via: RouteVia, from: Vec2, to: Vec2, opts: RouteOptions, along
 			const dx = Math.abs(to.x - from.x);
 			return Math.sqrt((2 * dy) / opts.gravity) + dx / opts.speeds.walk;
 		}
+		case "hop":
+			// Just the flight, plus the same windup a jump pays. The sideways distance is free: it is
+			// covered while falling, which is precisely what makes a hop worth planning over a drop
+			// followed by a walk.
+			return hopFlightTicks(Math.abs(to.y - from.y), opts) + opts.jumpOverhead;
 		case "chimney": {
 			// One edge, many kicks — so the cost is the whole ascent, or the router would price a
 			// corridor climb as a single hop and prefer it to things that are genuinely nearer.

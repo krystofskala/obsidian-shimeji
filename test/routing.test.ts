@@ -214,6 +214,49 @@ describe("the wall-top to ceiling handoff", () => {
 	});
 });
 
+describe("dropping versus hopping off an edge", () => {
+	// Two genuinely different ways down, and the router offers both: letting go lands directly
+	// below, pushing off carries sideways for the whole flight. Which is better depends entirely on
+	// where the mascot is trying to get to, so neither replaces the other.
+	const twoFloors = (): Ledge[] => [
+		{ kind: "floor", y: 400, x1: 300, x2: 600, source: "pane" },
+		{ kind: "floor", y: 800, x1: 0, x2: 1200, source: "window" },
+		{ kind: "wall", side: "left", x: 0, y1: 40, y2: 800, source: "window" },
+		{ kind: "wall", side: "right", x: 1200, y1: 40, y2: 800, source: "window" },
+	];
+
+	it("lands a hop further out than the edge it left, unlike a drop", () => {
+		const ledges = twoFloors();
+		const raised = ledges[0] as Extract<Ledge, { kind: "floor" }>;
+		const route = findRoute(ledges, { x: 590, y: 400 }, { x: 1100, y: 800 }, raised);
+		const step = route.find((s) => s.via === "hop" || s.via === "drop");
+		expect(step?.via).toBe("hop");
+		// A drop off this edge lands at x=606 (6px past it). The hop is still travelling as it
+		// falls, so it comes down well beyond that.
+		expect(step!.x).toBeGreaterThan(700);
+	});
+
+	it("still just lets go when the target is straight below", () => {
+		const ledges = twoFloors();
+		const raised = ledges[0] as Extract<Ledge, { kind: "floor" }>;
+		const route = findRoute(ledges, { x: 590, y: 400 }, { x: 606, y: 800 }, raised);
+		const step = route.find((s) => s.via === "hop" || s.via === "drop");
+		expect(step?.via).toBe("drop");
+	});
+
+	it("never hops through a floor to reach one below it", () => {
+		// A middle floor squarely under the arc: the hop has to land on that, not pass through it.
+		const ledges: Ledge[] = [
+			{ kind: "floor", y: 200, x1: 300, x2: 600, source: "pane" },
+			{ kind: "floor", y: 400, x1: 600, x2: 900, source: "pane" },
+			{ kind: "floor", y: 800, x1: 0, x2: 1200, source: "window" },
+		];
+		const top = ledges[0] as Extract<Ledge, { kind: "floor" }>;
+		const hop = findRoute(ledges, { x: 590, y: 200 }, { x: 1100, y: 800 }, top).find((s) => s.via === "hop");
+		if (hop) expect(hop.y).toBe(400);
+	});
+});
+
 describe("ledgeUnder", () => {
 	it("keeps the ledge physics already chose, even if another is nominally nearer", () => {
 		const ledges = bareWindow();

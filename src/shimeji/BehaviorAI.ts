@@ -97,8 +97,9 @@ const AVOID_CROWD_TARGET_PX = 140;
 const FLOOR_EDGE_MARGIN_PX = 20;
 
 /** Pack actions that carry out each kind of route step. `drop` is deliberately absent: falling is not
- * an action a pack performs, it is the absence of holding on — see startRouteAction. */
-const ROUTE_ACTIONS: Record<Exclude<RouteVia, "drop">, string[]> = {
+ * an action a pack performs, it is the absence of holding on — see startRouteAction. `hop` is
+ * absent for the same reason: it is a drop with a shove, not a different animation. */
+const ROUTE_ACTIONS: Record<Exclude<RouteVia, "drop" | "hop">, string[]> = {
 	// Dash, not Run, and not by accident: DEFAULT_ROUTE_OPTIONS costs a walk step at 8px/tick,
 	// which is precisely Dash's own speed in the bundled pack (Walk is 2, Run 4). The planner's
 	// numbers and the action that carries them out have to be the same number, and those costs
@@ -128,16 +129,6 @@ const ROUTE_ACTIONS: Record<Exclude<RouteVia, "drop">, string[]> = {
  */
 const CHIMNEY_HOP_PX = 120;
 
-/** How hard a routed drop pushes off the edge it is leaving, in the pack's own tick units so it
- * reads against `JumpFromLeftEdgeOfIE`'s authored `InitialVX`/`InitialVY` (15-20 sideways, 20-25
- * up). Far smaller than those, and the size is measured rather than chosen: the router plans a
- * drop landing directly below the edge, so every pixel of sideways travel is a pixel of
- * disagreement with that plan. At the pack's own 15-20 an ordered descent across a card-themed
- * layout drifts 157px off course and strands itself — a real test catches it. 2-3 is the most that
- * still leaves every route intact, and it is enough to read as pushing off rather than sliding
- * off. Upward is free: it delays the landing without moving it sideways. */
-const LETGO_HOP_VX_TICKS = { min: 2, max: 3 };
-const LETGO_HOP_VY_TICKS = { min: 8, max: 10 };
 
 /**
  * How far from a floor's end the mascot may be and still be understood as letting go *of that end*.
@@ -400,7 +391,10 @@ export class BehaviorAI {
 					this.spotPhase = undefined;
 					this.spotSpentDrops.push(phase.from);
 					debugLog("spot order: letting go to fall through", { from: [Math.round(phase.from.x), Math.round(phase.from.y)], spot });
-					return this.letGoAndFall(env, ledges);
+					// Never a hop: planDropThrough picked this departure point precisely because the
+					// spot is straight below it, so any sideways shove would miss the thing the whole
+					// phase exists to reach.
+					return this.letGoAndFall(env, ledges, false);
 				}
 				const leg = routeTo(phase.from)[0];
 				if (leg) return this.startRouteAction(env, ledges, leg.via, leg.x, leg.y, 1);
@@ -722,7 +716,7 @@ export class BehaviorAI {
 	 * two ends the mascot is at. Ceiling and wall releases need no step at all — letting go of those
 	 * already leaves nothing underfoot.
 	 */
-	private letGoAndFall(env: PushEnv, ledges: Ledge[]): boolean {
+	private letGoAndFall(env: PushEnv, ledges: Ledge[], push: boolean): boolean {
 		const { physics } = env.mascot;
 		const floor = physics.currentFloor?.kind === "floor" ? physics.currentFloor : undefined;
 		// Which way the mascot leaves, so the hop below pushes away from the edge rather than back
@@ -744,20 +738,19 @@ export class BehaviorAI {
 		physics.currentWall = undefined;
 		physics.currentFloor = undefined;
 		physics.grounded = false;
-		// Push off, rather than merely stop holding on. The pack's own way off a pane edge is
-		// `Falling` with `InitialVX="${-15-Math.random()*5}" InitialVY="${-20-Math.random()*5}"` —
-		// a launch sideways and slightly up, with gravity making the arc (see JumpFromLeftEdgeOfIE).
-		// A routed drop had none of that: it nudged the mascot 6px past the edge and fell straight
-		// down, which reads as sliding off rather than jumping off.
+		// A `hop` pushes off; a `drop` just stops holding on. Both are real moves and the router
+		// plans them as such, so this only has to perform whichever it asked for.
 		//
-		// Deliberately a smaller push than the pack's own deliberate leap. The router plans a drop
-		// landing directly below the edge, so every pixel of sideways travel is a pixel of
-		// disagreement with that plan; callers execute one leg and re-plan, which absorbs a hop of
-		// this size but would fight a 300px bound. `Fall` only overwrites velocity when it is given
-		// InitialVX/VY of its own, and forceFallBehavior gives it none, so this survives the start.
-		if (letGoDirection !== 0) {
-			physics.vx = letGoDirection * this.rng.range(LETGO_HOP_VX_TICKS.min, LETGO_HOP_VX_TICKS.max) * SHIMEJI_TICKS_PER_SEC;
-			physics.vy = -this.rng.range(LETGO_HOP_VY_TICKS.min, LETGO_HOP_VY_TICKS.max) * SHIMEJI_TICKS_PER_SEC;
+		// The launch numbers come from the router's own options rather than a second set kept here.
+		// That is the whole point: the router solved where this arc lands, and an executor shoving
+		// at any other speed would put the mascot somewhere else — which is exactly what an earlier
+		// attempt at this did, drifting an ordered descent 157px off its own plan. `Fall` overwrites
+		// velocity only when given InitialVX/VY of its own, and forceFallBehavior gives it none, so
+		// what is set here survives the start.
+		if (push && letGoDirection !== 0) {
+			const { vx, vy } = DEFAULT_ROUTE_OPTIONS.hop;
+			physics.vx = letGoDirection * vx * SHIMEJI_TICKS_PER_SEC;
+			physics.vy = -vy * SHIMEJI_TICKS_PER_SEC;
 		}
 		this.startBehavior(this.forceFallBehavior(), env);
 		return true;
@@ -780,10 +773,10 @@ export class BehaviorAI {
 		// TargetX is the mascot's own x, so it played a walk animation on the edge and never
 		// descended — and only ever got down when some other correction moved it, in a single tick
 		// with no fall. Both of those are exactly what a user reported seeing on a pane edge.
-		if (via === "drop") {
+		if (via === "drop" || via === "hop") {
 			debugLog("pursuit leg -> drop (letting go)", { from: [Math.round(physics.x), Math.round(physics.y)], to: [Math.round(targetX), Math.round(targetY ?? 0)], remainingSteps: remaining });
 			this.currentBehavior = attributeTo;
-			return this.letGoAndFall(env, ledges);
+			return this.letGoAndFall(env, ledges, via === "hop");
 		}
 
 		/*
