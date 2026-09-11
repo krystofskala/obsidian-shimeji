@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findRoute, ledgeUnder, planDropThrough, pointOn } from "../src/engine/Routing";
+import { routeDurationTicks, findRoute, ledgeUnder, planDropThrough, pointOn } from "../src/engine/Routing";
 import { computeLedgesFromRects, withoutLedgesTooCloseToTop } from "../src/engine/Ledges";
 import type { Ledge } from "../src/engine/types";
 
@@ -86,10 +86,15 @@ describe("findRoute", () => {
 	});
 
 	it("will not jump higher than the jump budget allows", () => {
-		// Same pane, but now 400px up — far past maxJumpUp, so no jump edge should exist.
+		// Same pane, but now 400px up — far past maxJumpUp, so no floor-to-floor jump edge exists.
+		//
+		// Scoped to floors, which is what maxJumpUp bounds. A jump *onto a wall* is a different move
+		// with its own reach (maxJumpTo): `Jumping` is constant-speed motion toward a point rather
+		// than an arc, so nothing about it is limited by how high a leap can carry, and the pack's own
+		// JumpOnIELeftWall does exactly this. The route below may legitimately use one.
 		const ledges = withPane({ left: 300, top: 400, right: 900, bottom: 500 });
 		const route = findRoute(ledges, { x: 500, y: 800 }, { x: 600, y: 400 });
-		expect(route.some((s) => s.via === "jump")).toBe(false);
+		expect(route.some((s) => s.via === "jump" && s.ledge.kind === "floor")).toBe(false);
 	});
 
 	// Two panes at nearly the same height, with a real gap between them — a normal side-by-side
@@ -359,7 +364,17 @@ describe("route cost is time, not distance", () => {
 		const climb = findRoute(ledges, from, { x: 0, y: 400 });
 
 		expect(walk.every((s) => s.via === "walk")).toBe(true);
-		expect(climb.some((s) => s.via === "climb")).toBe(true);
+		// Both routes get there; what this is about is what they cost.
+		expect(climb[climb.length - 1].ledge.kind).toBe("wall");
+		expect(climb[climb.length - 1].y).toBeCloseTo(400, 0);
+
+		// Asserted on the cost model directly rather than on which route is chosen. The router now
+		// has a second authentic way up a wall — a targeted `Jumping`, as the pack's own
+		// JumpOnIELeftWall does — and it is quicker, so the route it picks is no longer evidence
+		// about the price of climbing. The price itself is what was ever in question here.
+		const climbTicks = routeDurationTicks(from, [{ via: "climb", x: 600, y: 400, ledge: ledges[0] }]);
+		const walkTicks = routeDurationTicks(from, [{ via: "walk", x: 1000, y: 800, ledge: ledges[0] }]);
+		expect(climbTicks).toBeGreaterThan(walkTicks * 5);
 	});
 
 	// The dial between "get closest" and "get there soonest" — an explicit order sets it near zero,

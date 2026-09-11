@@ -58,6 +58,8 @@ export interface RouteOptions {
 	 * cannot reach a floor that is lower *and* to the side unless that floor happens to sit directly
 	 * under that one edge point — see the floor-to-floor jump transfer's own comment. */
 	maxJumpUp: number;
+	/** Straight-line reach of a targeted `Jumping` onto a wall — see DEFAULT_ROUTE_OPTIONS. */
+	maxJumpTo: number;
 	/**
 	 * How fast each kind of movement actually is, in pixels per engine tick, so routes can be costed
 	 * in **time** rather than distance.
@@ -140,11 +142,26 @@ export interface RouteOptions {
 	 * against the raw target, so a target floating in mid-air still terminates.
 	 */
 	arriveWithin: number;
+	/**
+	 * Called once per search, when a genuinely different second-best route exists; return true to
+	 * take it. Absent means "always the best", which is what every costing caller wants.
+	 *
+	 * Only the callers actually choosing a leg to travel pass this. A router that always answers
+	 * the same question the same way is right for one mascot and wrong for a roomful: twenty of
+	 * them take the identical path in single file. It also stops one very fast option becoming the
+	 * only thing anybody ever does, purely because it prices well.
+	 */
+	varyRoute?: () => boolean;
 }
 
 export const DEFAULT_ROUTE_OPTIONS: RouteOptions = {
 	maxJumpDx: 220,
 	maxJumpUp: 130,
+	// Straight-line reach of a targeted `Jumping` onto a wall. Generous next to maxJumpDx because
+	// this one is not fighting gravity — `Jumping` is constant-speed motion toward a point, not an
+	// arc, and the bundled pack's own JumpFromLeftWall aims clear across the work area — but still
+	// bounded, so routing cannot answer every question with a leap across the window.
+	maxJumpTo: 420,
 	speeds: { walk: 8, climb: 0.64, traverse: 0.64, jump: 20 },
 	// The bundled pack's own JumpFromLeftEdgeOfIE launches at `-15-random*5` sideways and
 	// `-20-random*5` up. Taken as the midpoint of those, so a routed hop looks like the jump the
@@ -159,7 +176,14 @@ export const DEFAULT_ROUTE_OPTIONS: RouteOptions = {
 	gravity: (DEFAULT_ENGINE_CONFIG.gravity * ENGINE_FIXED_TICK_MS * ENGINE_FIXED_TICK_MS) / 1_000_000,
 	jumpOverhead: 6,
 	chimneyHopUp: 120,
-	minChimneyGap: 3,
+	// Wide enough that a mascot could plausibly be *in* the corridor it is kicking across. It was 3
+	// — "the same edge to within a rounding error" — which is the right threshold for deciding
+	// whether two walls are one surface and the wrong one for deciding whether to climb between
+	// them. A card theme insets panes about that far from the window edge, and splitting wall
+	// arrivals by height newly exposed those slivers as routes: the search began answering a descent
+	// with a chimney across three pixels. Reported long before that, from the other direction, as a
+	// mascot visibly kicking side to side in the gap between two notes.
+	minChimneyGap: 24,
 	travelTimeWeight: 2,
 	uprightPreference: 80,
 	arriveWithin: 4,
@@ -426,6 +450,34 @@ function transfersFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts
 		// Clamped, each leg asks only for a point on the surface it travels along, and the few pixels
 		// left over are bridged by ordinary physics — gravity for a floor, adherence reach for a wall
 		// or ceiling — which is what those tolerances are for.
+		// Jumping *onto* a wall, which is the pack's own JumpOnIELeftWall / JumpFromLeftWall: a
+		// `Jumping` aimed at a point on the wall, then a `GrabWall` to hold on. The executor already
+		// performs exactly this for a `jump` step, passing both TargetX and TargetY; the router simply
+		// never offered one, so the only way onto a wall was to walk to its foot and climb it.
+		//
+		// Bounded by straight-line distance rather than by height, because `Jumping` is not ballistic:
+		// it is constant-speed motion toward a point (see the real Jump.java port), so there is no arc
+		// to fall short of and no reason a rise should be priced differently from a reach.
+		//
+		// Offered before the corner join below, which would otherwise `continue` past this for any
+		// wall whose foot touches the floor — that is to say, for almost every wall there is.
+		if (other.kind === "wall" && other !== ledge) {
+			const landing = pointOn(other, goal);
+			// Pushing off from the point on *this* surface nearest the landing, not from wherever the
+			// mascot happens to be standing: the search prices the travel to a departure point, so this
+			// is what lets it walk along the floor to below the wall and jump from there. Without it a
+			// jump was only ever available from exactly where the mascot arrived.
+			const from = pointOn(ledge, landing);
+			const reach = distance(from, landing);
+			// A leap, not a shuffle. Without a floor on this, two walls three pixels apart — which is
+			// what a card theme puts between a pane and the window edge — became a "jump" that travels
+			// nowhere, the same no-op step a 3px "climb" already had to be guarded against. One wall kick
+			// is the yardstick: a jump that covers less than that is not worth calling one.
+			if (reach >= opts.chimneyHopUp && reach <= opts.maxJumpTo && !jumpBlocked(ledges, from, landing, ledge, other)) {
+				out.push({ from, to: other, at: landing, via: "jump" });
+			}
+		}
+
 		if (ledge.kind !== "wall" && other.kind === "wall" && spansX(ledge, other.x) && spansY(other, ledge.y)) {
 			const from = { x: clamp(other.x, ledge.x1, ledge.x2), y: ledge.y };
 			const at = { x: other.x, y: clamp(ledge.y, other.y1, other.y2) };
@@ -653,6 +705,33 @@ function hopHitsWall(ledges: Ledge[], fromX: number, fromY: number, dir: number,
 	return false;
 }
 
+/**
+ * Whether a straight-line jump would pass through a wall or land on a floor before it arrives.
+ *
+ * Sampled, like the arc check above, and for the same reason: the engine stops a mascot at
+ * whatever it runs into, so a plan that ignores that is a plan it cannot carry out.
+ */
+function jumpBlocked(ledges: Ledge[], from: Vec2, to: Vec2, leaving: Ledge, arriving: Ledge): boolean {
+	const steps = Math.max(1, Math.ceil(distance(from, to) / 8));
+	let prev = from;
+	for (let i = 1; i <= steps; i++) {
+		const at = { x: from.x + ((to.x - from.x) * i) / steps, y: from.y + ((to.y - from.y) * i) / steps };
+		const lo = Math.min(prev.x, at.x);
+		const hi = Math.max(prev.x, at.x);
+		for (const l of ledges) {
+			if (l === leaving || l === arriving) continue;
+			if (l.kind === "wall") {
+				if (l.x <= lo || l.x >= hi) continue;
+				if (at.y >= l.y1 && at.y <= l.y2) return true;
+			} else if (l.kind === "floor" && at.y > prev.y) {
+				if (l.y >= prev.y && l.y <= at.y && spansX(l, at.x)) return true;
+			}
+		}
+		prev = at;
+	}
+	return false;
+}
+
 function stepCost(via: RouteVia, from: Vec2, to: Vec2, opts: RouteOptions, along?: Ledge, ledges?: Ledge[]): number {
 	const d = distance(from, to);
 	switch (via) {
@@ -764,34 +843,80 @@ function withoutStandingStill(steps: RouteStep[], from: Vec2): RouteStep[] {
  * point. That is a deliberate trade — the graph is tens of nodes and rebuilt every leg, and a
  * marginally suboptimal route is invisible where a slow one would not be.
  */
+/**
+ * How far apart two arrivals on the same wall have to be to count as different places to have got
+ * to.
+ *
+ * Only walls are split this way, and that is the whole point: a surface is worth distinguishing by
+ * *where* you land on it exactly when travelling along it is expensive, and climbing is 0.64px/tick
+ * against walking's 8. On a floor, arriving at either end costs much the same, so one node is
+ * honest; on a wall, arriving at the foot and arriving halfway up are minutes apart.
+ *
+ * Without this a wall remembered only its cheapest arrival — stepping onto its foot from the floor
+ * beside it — so a jump straight to the height actually wanted was discarded during the search and
+ * could never be chosen, however much climbing it saved.
+ */
+const WALL_ARRIVAL_BUCKET_PX = 200;
+
+/**
+ * How much worse than the best a route may be and still be offered as the alternative — see
+ * RouteOptions.varyRoute.
+ *
+ * Both a proportion and a floor, because the score mixes pixels of shortfall with weighted ticks of
+ * travel and carries a flat penalty for not being a floor: a pure ratio is too strict when the best
+ * score is near zero and too loose when it is large.
+ */
+const VARIETY_RELATIVE_SLACK = 0.25;
+const VARIETY_ABSOLUTE_SLACK = 40;
+
+interface Node {
+	ledge: Ledge;
+	cost: number;
+	at: Vec2;
+	prev?: { key: string; transfer: Transfer };
+}
+
 export function findRoute(ledges: Ledge[], from: Vec2, target: Vec2, startLedge?: Ledge, options?: Partial<RouteOptions>): RouteStep[] {
 	const opts = { ...DEFAULT_ROUTE_OPTIONS, ...options };
 	const start = ledgeUnder(ledges, from, startLedge);
 	if (!start) return [];
 
-	const visited = new Map<Ledge, Visit>();
-	visited.set(start, { cost: 0, at: from });
-	const queue: Ledge[] = [start];
+	const index = new Map<Ledge, number>();
+	ledges.forEach((l, i) => index.set(l, i));
+	const keyOf = (ledge: Ledge, at: Vec2): string =>
+		ledge.kind === "wall"
+			? `${index.get(ledge) ?? -1}@${Math.round(at.y / WALL_ARRIVAL_BUCKET_PX)}`
+			: `${index.get(ledge) ?? -1}`;
+
+	const visited = new Map<string, Node>();
+	const startKey = keyOf(start, from);
+	visited.set(startKey, { ledge: start, cost: 0, at: from });
+	const queue: string[] = [startKey];
 
 	while (queue.length > 0) {
 		// Linear scan for the cheapest unsettled node. A heap would be premature here: the graph is
-		// bounded by the number of visible panes, so this is a handful of comparisons.
+		// bounded by the number of visible panes, and only walls carry more than one node.
 		let bestIdx = 0;
 		for (let i = 1; i < queue.length; i++) {
 			if (visited.get(queue[i])!.cost < visited.get(queue[bestIdx])!.cost) bestIdx = i;
 		}
-		const ledge = queue.splice(bestIdx, 1)[0];
-		const here = visited.get(ledge)!;
+		const key = queue.splice(bestIdx, 1)[0];
+		const here = visited.get(key)!;
 
-		for (const transfer of transfersFrom(ledge, here.at, target, ledges, opts)) {
+		for (const transfer of transfersFrom(here.ledge, here.at, target, ledges, opts)) {
 			const cost =
 				here.cost +
-				stepCost(alongVia(ledge), here.at, transfer.from, opts, ledge, ledges) +
+				stepCost(alongVia(here.ledge), here.at, transfer.from, opts, here.ledge, ledges) +
 				stepCost(transfer.via, transfer.from, transfer.at, opts, transfer.to, ledges);
-			const existing = visited.get(transfer.to);
+			const toKey = keyOf(transfer.to, transfer.at);
+			const existing = visited.get(toKey);
+			// Cost alone, which is what keeps this a Dijkstra: folding in how far the arrival still
+			// leaves the mascot from the target makes the comparison non-monotonic, so a node can be
+			// improved, re-queued and improved again without end. Tried once; it hung. What lets the
+			// better arrival survive now is that it is a *different node*, not a different comparison.
 			if (existing && existing.cost <= cost) continue;
-			visited.set(transfer.to, { cost, at: transfer.at, prev: { ledge, transfer } });
-			if (!queue.includes(transfer.to)) queue.push(transfer.to);
+			visited.set(toKey, { ledge: transfer.to, cost, at: transfer.at, prev: { key, transfer } });
+			if (!queue.includes(toKey)) queue.push(toKey);
 		}
 	}
 
@@ -800,39 +925,94 @@ export function findRoute(ledges: Ledge[], from: Vec2, target: Vec2, startLedge?
 	// floor the mascot is already standing on. Costs are ticks and the other term is pixels, so the
 	// weight converts: at walking speed a pixel is ~1/8 of a tick, and valuing travel time at roughly
 	// a third of that keeps proximity the dominant consideration without ignoring a long slog.
-	let goal: Ledge | undefined;
-	let goalScore = Infinity;
-	for (const [ledge, visit] of visited) {
-		const upright = ledge.kind === "floor" ? 0 : opts.uprightPreference;
-		const score = distance(pointOn(ledge, target), target) + visit.cost * opts.travelTimeWeight + upright;
-		if (score < goalScore) {
-			goalScore = score;
-			goal = ledge;
-		}
+	//
+	// Scored per *surface*, exactly as it always was, and deliberately so. Folding the travel still
+	// left along the surface into this score is more honest and breaks everything: at the default
+	// weight a 937-tick climb outweighs 600px of proximity, so the router stopped climbing walls at
+	// all and answered "walk to the foot and stop". The weight was tuned against a score that did not
+	// count it.
+	//
+	// Where that travel *does* decide something is between two arrivals on the same wall — which one
+	// leaves less climbing — and that is a choice the cross-surface score never sees.
+	const perLedge = new Map<Ledge, { minCost: number }>();
+	for (const visit of visited.values()) {
+		const entry = perLedge.get(visit.ledge);
+		if (entry) entry.minCost = Math.min(entry.minCost, visit.cost);
+		else perLedge.set(visit.ledge, { minCost: visit.cost });
 	}
-	if (!goal) return [];
 
-	// Walk the predecessor chain back to the start, emitting the pair of steps each transfer implies:
-	// travel along the surface you are on to the departure point, then the transfer itself.
+	// One entry per *arrival*, not per surface, and ordered on two keys. The surface score is the
+	// primary one and is deliberately identical for every arrival on the same ledge, so nothing about
+	// choosing between ledges changes. The travel still left along that surface breaks the tie.
+	//
+	// Which is what makes a genuine alternative available at all: reaching a wall by jumping to the
+	// height wanted and reaching it by stepping onto its foot are two arrivals on one ledge, and
+	// collapsing them — as an earlier version of this did — left the two best routes differing only
+	// in which *surface* they ended on. That is almost never what "a different way round" means.
+	const scored: { key: string; score: number; along: number }[] = [];
+	for (const [key, visit] of visited) {
+		const entry = perLedge.get(visit.ledge)!;
+		const upright = visit.ledge.kind === "floor" ? 0 : opts.uprightPreference;
+		const arrival = pointOn(visit.ledge, target);
+		const along = visit.cost + stepCost(alongVia(visit.ledge), visit.at, arrival, opts, visit.ledge, ledges);
+		scored.push({ key, score: distance(arrival, target) + entry.minCost * opts.travelTimeWeight + upright, along });
+	}
+	if (scored.length === 0) return [];
+	scored.sort((a, b) => a.score - b.score || a.along - b.along);
+
+	const best = buildRoute(scored[0].key, visited, from, target, opts);
+	// A second way of going, when one genuinely sets off differently — see RouteOptions.varyRoute
+	// for why a router that always answers the same is right for one mascot and wrong for a roomful.
+	if (!opts.varyRoute) return best;
+	// Only against a rival worth having. A coin flip between two comparable routes is variety; a coin
+	// flip between the sensible one and one half again as long is just a mascot going the wrong way,
+	// which is what happened to pointer-following and to the corridor climb when this was unbounded.
+	const ceiling = scored[0].score + Math.max(VARIETY_ABSOLUTE_SLACK, Math.abs(scored[0].score) * VARIETY_RELATIVE_SLACK);
+	for (const candidate of scored.slice(1)) {
+		if (candidate.score > ceiling) break; // sorted, so nothing further can qualify either
+		const alternative = buildRoute(candidate.key, visited, from, target, opts);
+		if (!differentJourney(best, alternative)) continue;
+		return opts.varyRoute() ? alternative : best;
+	}
+	return best;
+}
+
+/**
+ * Whether two routes are actually different journeys, which is the only thing that makes offering a
+ * choice between them worth anything.
+ *
+ * Compared along their whole length, not by their first step. The pair this exists for — jumping to
+ * a height against walking to the foot and climbing — share an identical opening walk and diverge
+ * only at the second leg, so a first-step test rejected the very case it was written for.
+ */
+function differentJourney(a: RouteStep[], b: RouteStep[]): boolean {
+	if (a.length !== b.length) return true;
+	return a.some((step, i) => step.via !== b[i].via || Math.hypot(step.x - b[i].x, step.y - b[i].y) > 1);
+}
+
+/** Walks the predecessor chain back to the start, emitting the pair of steps each transfer implies:
+ * travel along the surface you are on to the departure point, then the transfer itself. */
+function buildRoute(goalKey: string, visited: Map<string, Node>, from: Vec2, target: Vec2, opts: RouteOptions): RouteStep[] {
+	const goal = visited.get(goalKey);
+	if (!goal) return [];
 	const steps: RouteStep[] = [];
-	for (let ledge: Ledge | undefined = goal; ledge; ) {
-		const visit: Visit = visited.get(ledge)!;
-		if (!visit.prev) break;
-		const { transfer } = visit.prev;
+	for (let node: Node | undefined = goal; node; ) {
+		if (!node.prev) break;
+		const { transfer } = node.prev;
 		steps.unshift({ via: transfer.via, x: transfer.at.x, y: transfer.at.y, ledge: transfer.to });
-		const departure = visited.get(visit.prev.ledge)!;
+		const departure: Node = visited.get(node.prev.key)!;
 		if (distance(departure.at, transfer.from) > 0.5) {
-			steps.unshift({ via: alongVia(visit.prev.ledge), x: transfer.from.x, y: transfer.from.y, ledge: visit.prev.ledge });
+			steps.unshift({ via: alongVia(departure.ledge), x: transfer.from.x, y: transfer.from.y, ledge: departure.ledge });
 		}
-		ledge = visit.prev.ledge;
+		node = departure;
 	}
 
 	// Finally, move along the goal surface to the point nearest the target. Suppressed when already
 	// close enough, which is what makes an empty route mean "nothing further to do" — the signal
 	// callers rely on to stop pursuing something they cannot get any nearer to.
-	const arrival = pointOn(goal, target);
+	const arrival = pointOn(goal.ledge, target);
 	const lastAt = steps.length > 0 ? { x: steps[steps.length - 1].x, y: steps[steps.length - 1].y } : from;
-	if (distance(lastAt, arrival) > opts.arriveWithin) steps.push({ via: alongVia(goal), x: arrival.x, y: arrival.y, ledge: goal });
+	if (distance(lastAt, arrival) > opts.arriveWithin) steps.push({ via: alongVia(goal.ledge), x: arrival.x, y: arrival.y, ledge: goal.ledge });
 
 	return withoutStandingStill(steps, from);
 }

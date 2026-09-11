@@ -35,7 +35,11 @@ function scene() {
 	};
 	const mascot = {
 		physics, stateElapsedMs: 0, affordances: [] as string[], hotspots: [], variables: new Map(),
-		setVisualImage() {}, getViewportSize: () => ({ width: 1200, height: 800 }),
+		setVisualImage() {},
+		// The pack's own chain can reach a Breed action from here, which it could not before the
+		// router gained a second way round; a fake mascot has to answer for that like the real one.
+		requestSibling() {},
+		getViewportSize: () => ({ width: 1200, height: 800 }),
 		getWorldTop: () => 40, getTotalMascotCount: () => 1, getSameCharacterCount: () => 1,
 	} as unknown as Mascot;
 
