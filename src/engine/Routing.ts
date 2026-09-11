@@ -60,6 +60,8 @@ export interface RouteOptions {
 	maxJumpUp: number;
 	/** Straight-line reach of a targeted `Jumping` onto a wall — see DEFAULT_ROUTE_OPTIONS. */
 	maxJumpTo: number;
+	/** How much of a wall jump's reach has to be horizontal — see DEFAULT_ROUTE_OPTIONS. */
+	minJumpAcross: number;
 	/**
 	 * How fast each kind of movement actually is, in pixels per engine tick, so routes can be costed
 	 * in **time** rather than distance.
@@ -157,11 +159,20 @@ export interface RouteOptions {
 export const DEFAULT_ROUTE_OPTIONS: RouteOptions = {
 	maxJumpDx: 220,
 	maxJumpUp: 130,
-	// Straight-line reach of a targeted `Jumping` onto a wall. Generous next to maxJumpDx because
-	// this one is not fighting gravity — `Jumping` is constant-speed motion toward a point, not an
-	// arc, and the bundled pack's own JumpFromLeftWall aims clear across the work area — but still
-	// bounded, so routing cannot answer every question with a leap across the window.
+	// Straight-line reach of a targeted `Jumping` onto a wall. `Jumping` is constant-speed motion
+	// toward a point rather than an arc, so nothing about gravity limits it.
+	//
+	// Held at a wall or two rather than a window's width, for now. Longer jumps are what the pack
+	// itself does — JumpFromLeftWall aims clear across the work area — and they produce exactly the
+	// bouncing between the two sides that was asked for, but they also let the search chain cheap
+	// leaps into routes whose first leg is not progress, and per-leg re-planning does not survive
+	// that: traced, a mascot climbed a pane wall, jumped to the far side, climbed down, fell, walked
+	// back and did it again, forever. Committing to a route for the length of a journey is the fix,
+	// and it is a change to how routes are followed, not a number here.
 	maxJumpTo: 420,
+	// ...and how much of that reach has to be sideways. Without a floor on this the cheap answer to
+	// "get higher" was a column of short upward hops inside the gap between two panes.
+	minJumpAcross: 240,
 	speeds: { walk: 8, climb: 0.64, traverse: 0.64, jump: 20 },
 	// The bundled pack's own JumpFromLeftEdgeOfIE launches at `-15-random*5` sideways and
 	// `-20-random*5` up. Taken as the midpoint of those, so a routed hop looks like the jump the
@@ -461,6 +472,20 @@ function transfersFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts
 		//
 		// Offered before the corner join below, which would otherwise `continue` past this for any
 		// wall whose foot touches the floor — that is to say, for almost every wall there is.
+		// Jumping *onto* a wall, which is the pack's own JumpOnIELeftWall / JumpFromLeftWall: a
+		// `Jumping` aimed at a point on the wall, then a `GrabWall` to hold on. The executor already
+		// performs exactly this for a `jump` step, passing both TargetX and TargetY; the router simply
+		// never offered one, so the only way onto a wall was to walk to its foot and climb it.
+		//
+		// Bounded by straight-line distance rather than by height, because `Jumping` is not ballistic:
+		// it is constant-speed motion toward a point (see the real Jump.java port), so there is no arc
+		// to fall short of and no reason a rise should be priced differently from a reach.
+		//
+		// Offered before the corner join below, which would otherwise `continue` past this for any
+		// wall whose foot touches the floor — that is to say, for almost every wall there is. And
+		// written as a plain `if` rather than a guard-and-continue, because a rejected *jump* must not
+		// also skip the corner join for the same pair: doing that cut walls off from floors entirely
+		// and collapsed every route to a walk along the ground.
 		if (other.kind === "wall" && other !== ledge) {
 			const landing = pointOn(other, goal);
 			// Pushing off from the point on *this* surface nearest the landing, not from wherever the
@@ -468,12 +493,19 @@ function transfersFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts
 			// is what lets it walk along the floor to below the wall and jump from there. Without it a
 			// jump was only ever available from exactly where the mascot arrived.
 			const from = pointOn(ledge, landing);
+			// A jump goes *across*. Vertical reach is what climbing is for, and a leap straight up the
+			// line you are already on is not a jump at all — it is levitation.
+			//
+			// This is the difference between what the router was doing and what it was asked for. A
+			// pane's wall is cut into segments wherever a neighbour's edge interrupts it, and its own
+			// floors end exactly at its own edges, so short upward hops were available all the way up
+			// the 8px slit between two panes. The router took them, because each is cheap, and from
+			// outside that is indistinguishable from tunnelling up the gap — which is how it was
+			// reported. Crossing to the facing wall is the move that was wanted, and it was out of
+			// reach at the old bound.
+			const across = Math.abs(landing.x - from.x);
 			const reach = distance(from, landing);
-			// A leap, not a shuffle. Without a floor on this, two walls three pixels apart — which is
-			// what a card theme puts between a pane and the window edge — became a "jump" that travels
-			// nowhere, the same no-op step a 3px "climb" already had to be guarded against. One wall kick
-			// is the yardstick: a jump that covers less than that is not worth calling one.
-			if (reach >= opts.chimneyHopUp && reach <= opts.maxJumpTo && !jumpBlocked(ledges, from, landing, ledge, other)) {
+			if (across >= opts.minJumpAcross && reach <= opts.maxJumpTo && !jumpBlocked(ledges, from, landing, ledge, other)) {
 				out.push({ from, to: other, at: landing, via: "jump" });
 			}
 		}

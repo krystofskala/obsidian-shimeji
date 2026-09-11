@@ -446,11 +446,11 @@ export class BehaviorAI {
 	 * Costing must stay deterministic: chooseSpotPlan compares a drop against surgery against going
 	 * as near as possible, and a comparison whose inputs shift under it decides nothing.
 	 *
-	 * An explicit order is left out too, and that is a judgement rather than a technicality. Variety
-	 * is for movement nobody asked for — a roomful of mascots wandering identically is the thing
-	 * worth fixing. When someone points at a spot they want that mascot to go there sensibly, and a
-	 * coin flip there buys nothing: measured, it turned a 600-tick order into 2060 and left another
-	 * never arriving, because the second-best way to one specific point is simply the worse way.
+	 * Orders get it too, and that is the case it matters most for: sending twenty mascots to one
+	 * point is precisely when they all set off down the identical path in single file. It was left
+	 * out for a while after an unbounded, per-leg version turned a 600-tick order into 2060 and left
+	 * another never arriving — but that was the rolling, not the variety. Rolled once per journey it
+	 * costs an order nothing.
 	 */
 	private get varyRoute(): () => boolean {
 		return () => this.preferSecondRoute;
@@ -485,7 +485,7 @@ export class BehaviorAI {
 		// there is worth a long climb. Following uses the default, where it is not — see RouteOptions.
 		const routeOpts = { arriveWithin: SPOT_ARRIVAL_PX, travelTimeWeight: 0.05, speeds: this.routeSpeeds };
 		const routeTo = (target: Vec2, graph: Ledge[] = ledges) =>
-			graph.length > 0 ? findRoute(graph, here, target, attached, routeOpts) : [];
+			graph.length > 0 ? findRoute(graph, here, target, attached, { ...routeOpts, varyRoute: this.varyRoute }) : [];
 
 		// A phase in progress is physical work with an animation behind it — get where it happens, then
 		// do it. Each returns to plain routing once finished.
