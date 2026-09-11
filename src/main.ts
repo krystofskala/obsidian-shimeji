@@ -28,6 +28,7 @@ import { reconcileStoredSettings, resolveEffectiveSettings, type StoredShimejiSe
 import { mergeCustomContent } from "./shimeji/CustomContentBuilder";
 import { newSpecId } from "./shimeji/customContent";
 import { buildPaneWranglingContent } from "./shimeji/paneWrangling";
+import { buildAdventurousnessContent } from "./shimeji/adventurousness";
 import { PackDriver } from "./shimeji/PackDriver";
 import { runMovementSelfTest, startFreePlayRecording, type SelfTestHandle } from "./movementSelfTest";
 import { loadPacksFromFolder } from "./shimeji/PackLoader";
@@ -835,8 +836,15 @@ export default class ShimejiPlugin extends Plugin {
 		// disable one of these can simply author an action or behavior of the same name in the
 		// custom-content editor — the built-in one loses, exactly as if it had been a pack default.
 		const paneWrangling = this.settings.allowPaneWrangling ? buildPaneWranglingContent() : undefined;
+		// Before the user's own content and after the pack's, same as pane wrangling: this only
+		// re-weights behaviours the pack already has (plus one it does not), so anything hand-authored
+		// under the same name still wins.
+		const adventurousness = this.settings.adventurousMovement ? buildAdventurousnessContent() : undefined;
 		this.availablePacks = this.basePacks.map((p) =>
-			mergeCustomContent(mergeCustomContent(p, paneWrangling), this.settings.customContent[p.id]),
+			mergeCustomContent(
+				mergeCustomContent(mergeCustomContent(p, paneWrangling), adventurousness),
+				this.settings.customContent[p.id],
+			),
 		);
 		// Deliberately not awaited and deliberately deferred: this is a diagnostic, and nothing about
 		// having the packs ready should wait on it.

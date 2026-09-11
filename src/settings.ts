@@ -79,6 +79,9 @@ export interface ShimejiSettings {
 	 * shove and fold your panes and sidebars. Separate from allowWindowThrow because that one spawns
 	 * a real OS window, which is a different order of surprise. See shimeji/paneWrangling.ts. */
 	allowPaneWrangling: boolean;
+	/** Re-weights the pack's own climbing and jumping so it happens often enough to see — see
+	 * shimeji/adventurousness.ts for the measurements behind it. */
+	adventurousMovement: boolean;
 	/** Invented: mascots occasionally pick a destination anywhere in the layout and route to it over
 	 * the ledge graph, climbing walls and hopping between panes to get there. See engine/Routing.ts. */
 	roamEnabled: boolean;
@@ -249,6 +252,7 @@ export const DEFAULT_SETTINGS: ShimejiSettings = {
 	soundVolume: 70,
 	allowWindowThrow: false,
 	allowPaneWrangling: true,
+	adventurousMovement: true,
 	roamEnabled: true,
 	moodEnabled: true,
 	allowLayoutSurgery: true,
@@ -1376,6 +1380,19 @@ export class ShimejiSettingTab extends PluginSettingTab {
 					.addToggle((toggle) =>
 						toggle.setValue(this.plugin.settings.allowPaneWrangling).onChange(async (value) => {
 							this.plugin.settings.allowPaneWrangling = value;
+							await this.plugin.saveSettings();
+							this.plugin.applyCustomContent();
+						}),
+					);
+
+				new Setting(containerEl)
+					.setName("Climb and jump more")
+					.setDesc(
+						"Your pack already knows how to jump onto a pane and climb its side — it just asks to, about once an hour. This weights those up so you actually see them, and adds one leap the pack has no move for: crossing the window from one side wall to the other. It only re-weights your character's own animations, so it works with any pack, and anything you author yourself under the same name still wins.",
+					)
+					.addToggle((toggle) =>
+						toggle.setValue(this.plugin.settings.adventurousMovement).onChange(async (value) => {
+							this.plugin.settings.adventurousMovement = value;
 							await this.plugin.saveSettings();
 							this.plugin.applyCustomContent();
 						}),
