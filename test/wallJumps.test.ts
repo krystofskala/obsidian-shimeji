@@ -3,16 +3,10 @@ import { findRoute } from "../src/engine/Routing";
 import type { Ledge } from "../src/engine/types";
 
 /**
- * Two things that only make sense together.
- *
  * A wall used to remember only its cheapest arrival — stepping onto its foot from the floor beside
  * it — so a jump straight to the height actually wanted was discarded during the search and could
- * never be chosen, however much climbing it saved. Splitting wall arrivals by height fixes that, and
- * immediately creates the opposite problem: twenty mascots sent to one point all set off down the
- * identical fastest path in single file.
- *
- * So the router offers a choice. Between two routes that are genuinely different journeys and
- * comparably good, it flips a coin — once per journey, per mascot.
+ * never be chosen, however much climbing it saved. Wall arrivals are separate nodes by height now,
+ * which is what lets the jump win; these are the rules that keep it from winning everywhere.
  */
 
 /** The user's own layout, from a live `shimejiDebug.dumpLedges()`. Obsidian's pane dividers show up
@@ -47,14 +41,12 @@ describe("a jump has to go across", () => {
 		// floors end exactly at its own edges — so short upward leaps were available all the way up
 		// the 8px slit between two panes, and being cheap, the router took them. From outside that is
 		// indistinguishable from tunnelling up the gap, which is how it was reported.
-		for (const target of [{ x: 800, y: 600 }, { x: 600, y: 300 }, { x: 400, y: 500 }]) {
-			for (const vary of [undefined, () => true]) {
-				const route = findRoute(REAL, { x: 900, y: 1392 }, target, FLOOR, { ...OPTS, varyRoute: vary });
-				for (let i = 0; i < route.length; i++) {
-					if (route[i].via !== "jump") continue;
-					const fromX = i === 0 ? 900 : route[i - 1].x;
-					expect(Math.abs(route[i].x - fromX), `sideways travel in ${spell(route)}`).toBeGreaterThan(100);
-				}
+		for (const target of [{ x: 800, y: 600 }, { x: 600, y: 300 }, { x: 400, y: 500 }, { x: 1240, y: 400 }]) {
+			const route = findRoute(REAL, { x: 900, y: 1392 }, target, FLOOR, OPTS);
+			for (let i = 0; i < route.length; i++) {
+				if (route[i].via !== "jump") continue;
+				const fromX = i === 0 ? 900 : route[i - 1].x;
+				expect(Math.abs(route[i].x - fromX), `sideways travel in ${spell(route)}`).toBeGreaterThan(100);
 			}
 		}
 	});
@@ -65,43 +57,28 @@ describe("a jump has to go across", () => {
 		expect(route[route.length - 1].ledge.kind).toBe("wall");
 		expect(route[route.length - 1].y).toBeCloseTo(1100, 0);
 	});
-});
 
-describe("offering a second way round", () => {
-	const target = { x: 800, y: 600 };
-	const routeWith = (vary?: () => boolean) => findRoute(REAL, { x: 900, y: 1392 }, target, FLOOR, { ...OPTS, varyRoute: vary });
-
-	it("has a genuinely different journey to offer", () => {
-		expect(spell(routeWith(() => true))).not.toBe(spell(routeWith()));
-	});
-
-	it("both ways still end up somewhere useful", () => {
-		for (const vary of [undefined, () => true]) {
-			const route = routeWith(vary);
-			const last = route[route.length - 1];
-			expect(Math.hypot(last.x - target.x, last.y - target.y)).toBeLessThan(500);
+	it("never doubles back along a wall to reach a point on it", () => {
+		// The shape a discarded experiment produced, and what it looked like from the sofa: a mascot
+		// climbing past the point and coming back down to it — reported as "they climbed the same
+		// wall but never pushed off, just up and down".
+		//
+		// Tested as "two consecutive legs on the same surface", which is what doubling back actually
+		// is: travel along a surface is one leg, so a second one in a row means the first went
+		// somewhere the route then had to undo. Deliberately not "never move away from the target" —
+		// bouncing off the facing wall to gain height legitimately does that, and is wanted.
+		for (const target of [{ x: 1240, y: 1100 }, { x: 1240, y: 1200 }, { x: 350, y: 800 }, { x: 10, y: 900 }]) {
+			const route = findRoute(REAL, { x: 900, y: 1392 }, target, FLOOR, OPTS);
+			for (let i = 1; i < route.length; i++) {
+				expect(route[i].ledge === route[i - 1].ledge, `doubles back in ${spell(route)}`).toBe(false);
+			}
 		}
 	});
 
-	it("leaves every costing caller deterministic", () => {
-		// chooseSpotPlan weighs a drop against surgery against going as near as possible; inputs that
-		// shift under a comparison decide nothing. Only the calls that pick a leg to travel vary.
-		const a = routeWith();
-		for (let i = 0; i < 8; i++) expect(routeWith()).toEqual(a);
-	});
-
-	it("does not offer a rival that is much worse", () => {
-		// Variety is a coin flip between comparable routes. Between the sensible one and one half
-		// again as long it is just a mascot going the wrong way — which is what it did to
-		// pointer-following and the corridor climb before the closeness bound went in.
-		const bare: Ledge[] = [
-			{ kind: "floor", y: 800, x1: 0, x2: 1200, source: "window" },
-			{ kind: "ceiling", y: 0, x1: 0, x2: 1200, source: "window" },
-			{ kind: "wall", side: "left", x: 0, y1: 0, y2: 800, source: "window" },
-			{ kind: "wall", side: "right", x: 1200, y1: 0, y2: 800, source: "window" },
-		];
-		const straight = findRoute(bare, { x: 100, y: 800 }, { x: 900, y: 800 }, bare[0], OPTS);
-		const varied = findRoute(bare, { x: 100, y: 800 }, { x: 900, y: 800 }, bare[0], { ...OPTS, varyRoute: () => true });
-		expect(varied).toEqual(straight);
+	it("is deterministic, so the same question gets the same answer", () => {
+		// Costing depends on it: chooseSpotPlan weighs a drop against surgery against going as near as
+		// possible, and a comparison whose inputs shift under it decides nothing.
+		const a = findRoute(REAL, { x: 900, y: 1392 }, { x: 800, y: 600 }, FLOOR, OPTS);
+		for (let i = 0; i < 8; i++) expect(findRoute(REAL, { x: 900, y: 1392 }, { x: 800, y: 600 }, FLOOR, OPTS)).toEqual(a);
 	});
 });

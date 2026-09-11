@@ -211,7 +211,6 @@ export class BehaviorAI {
 	 * pick, and touches nothing about how actions themselves run.
 	 */
 	setFollowingMouse(following: boolean): void {
-		if (following) this.rollRouteVariant();
 		this.followingMouse = following;
 		if (!following) this.pursuitAimedAt = undefined;
 		if (following) this.orderedSpot = undefined;
@@ -300,7 +299,6 @@ export class BehaviorAI {
 	 */
 	orderToSpot(point: Vec2, options?: { allowSurgery?: boolean; travelActions?: string[] }): void {
 		this.orderedSpot = { x: point.x, y: point.y };
-		this.rollRouteVariant();
 		this.spotOrderJustIssued = true;
 		this.spotTravelActions = options?.travelActions;
 		// Opt-out for orders that are issued repeatedly and automatically — running laps, four
@@ -432,48 +430,6 @@ export class BehaviorAI {
 	 * for the realistic case (split the pane, then place the divider) while making a runaway
 	 * impossible.
 	 */
-	/**
-	 * Passed to the route calls that actually pick a leg to travel, and to none of the ones that
-	 * merely price a plan.
-	 *
-	 * A router that always returns the best answer is right for one mascot and wrong for a roomful:
-	 * twenty of them take the identical path in single file, and the moment one option prices well
-	 * — a jump to a wall, say, against a climb it beats by an order of magnitude — it becomes the
-	 * only thing anybody ever does. Choosing evenly between the two best routes whenever they
-	 * genuinely set off differently keeps the fast option common without making it universal, and
-	 * it is rolled fresh on every leg, so one mascot's journey varies along its own length too.
-	 *
-	 * Costing must stay deterministic: chooseSpotPlan compares a drop against surgery against going
-	 * as near as possible, and a comparison whose inputs shift under it decides nothing.
-	 *
-	 * Orders get it too, and that is the case it matters most for: sending twenty mascots to one
-	 * point is precisely when they all set off down the identical path in single file. It was left
-	 * out for a while after an unbounded, per-leg version turned a 600-tick order into 2060 and left
-	 * another never arriving — but that was the rolling, not the variety. Rolled once per journey it
-	 * costs an order nothing.
-	 */
-	private get varyRoute(): () => boolean {
-		return () => this.preferSecondRoute;
-	}
-
-	/**
-	 * Which of the two routes this mascot is taking on its *current* journey.
-	 *
-	 * Rolled once when a journey begins — an order given, a roam target chosen, following switched
-	 * on — and held for its whole length. Rolling afresh on every leg is the obvious reading of "let
-	 * it decide each time it changes movement" and it does not work: with two comparable routes the
-	 * mascot changes its mind at every step and makes no progress. Measured, not guessed — one spot
-	 * order took 2060 ticks where it had taken under 600, and another never arrived at all.
-	 *
-	 * Per mascot, so a roomful still fans out across both routes; per journey, so each of them
-	 * actually gets somewhere.
-	 */
-	private preferSecondRoute = false;
-
-	/** Called wherever a new journey starts. */
-	private rollRouteVariant(): void {
-		this.preferSecondRoute = this.rng.chance(0.5);
-	}
 
 	private driveSpotOrder(env: PushEnv, ledges: Ledge[], reentered = false): boolean {
 		const spot = this.orderedSpot;
@@ -485,7 +441,7 @@ export class BehaviorAI {
 		// there is worth a long climb. Following uses the default, where it is not — see RouteOptions.
 		const routeOpts = { arriveWithin: SPOT_ARRIVAL_PX, travelTimeWeight: 0.05, speeds: this.routeSpeeds };
 		const routeTo = (target: Vec2, graph: Ledge[] = ledges) =>
-			graph.length > 0 ? findRoute(graph, here, target, attached, { ...routeOpts, varyRoute: this.varyRoute }) : [];
+			graph.length > 0 ? findRoute(graph, here, target, attached, routeOpts) : [];
 
 		// A phase in progress is physical work with an animation behind it — get where it happens, then
 		// do it. Each returns to plain routing once finished.
@@ -764,7 +720,7 @@ export class BehaviorAI {
 		// next behaviour-end will roll again, and by then the crowd may have moved on regardless.
 		if (Math.abs(targetX - physics.x) < ROAM_ARRIVAL_PX) return false;
 
-		const route = findRoute(ledges, { x: physics.x, y: physics.y }, { x: targetX, y: physics.y }, floor, { arriveWithin: ROAM_ARRIVAL_PX, speeds: this.routeSpeeds, varyRoute: this.varyRoute });
+		const route = findRoute(ledges, { x: physics.x, y: physics.y }, { x: targetX, y: physics.y }, floor, { arriveWithin: ROAM_ARRIVAL_PX, speeds: this.routeSpeeds });
 		const next = route[0];
 		if (!next) return false;
 		if (!this.startRouteAction(env, ledges, next.via, next.x, next.y, route.length)) return false;
@@ -803,12 +759,11 @@ export class BehaviorAI {
 			const ledge = this.rng.pick(ledges);
 			const spot = ledge.kind === "wall" ? { x: ledge.x, y: this.rng.range(ledge.y1, ledge.y2) } : { x: this.rng.range(ledge.x1, ledge.x2), y: ledge.y };
 			this.roamTarget = spot;
-			this.rollRouteVariant();
-		}
+			}
 
 		const { physics } = env.mascot;
 		const attached = physics.currentFloor ?? physics.currentWall ?? physics.currentCeiling;
-		const route = findRoute(ledges, { x: physics.x, y: physics.y }, this.roamTarget, attached, { arriveWithin: ROAM_ARRIVAL_PX, speeds: this.routeSpeeds, varyRoute: this.varyRoute });
+		const route = findRoute(ledges, { x: physics.x, y: physics.y }, this.roamTarget, attached, { arriveWithin: ROAM_ARRIVAL_PX, speeds: this.routeSpeeds });
 		const next = route[0];
 		if (!next) {
 			// Arrived, or nothing connects. Either way this expedition is over; the pack's own
@@ -839,7 +794,7 @@ export class BehaviorAI {
 		// to move would be pure churn.
 		this.pursuitAimedAt = { x: cursor.x, y: cursor.y };
 		const attached = physics.currentFloor ?? physics.currentWall ?? physics.currentCeiling;
-		const route = ledges.length > 0 ? findRoute(ledges, { x: physics.x, y: physics.y }, cursor, attached, { arriveWithin: FOLLOW_ARRIVAL_PX, speeds: this.routeSpeeds, varyRoute: this.varyRoute }) : [];
+		const route = ledges.length > 0 ? findRoute(ledges, { x: physics.x, y: physics.y }, cursor, attached, { arriveWithin: FOLLOW_ARRIVAL_PX, speeds: this.routeSpeeds }) : [];
 		const next = route[0];
 
 		// With surfaces present, an empty route means the router has nothing left to offer — the

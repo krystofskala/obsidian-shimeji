@@ -144,16 +144,6 @@ export interface RouteOptions {
 	 * against the raw target, so a target floating in mid-air still terminates.
 	 */
 	arriveWithin: number;
-	/**
-	 * Called once per search, when a genuinely different second-best route exists; return true to
-	 * take it. Absent means "always the best", which is what every costing caller wants.
-	 *
-	 * Only the callers actually choosing a leg to travel pass this. A router that always answers
-	 * the same question the same way is right for one mascot and wrong for a roomful: twenty of
-	 * them take the identical path in single file. It also stops one very fast option becoming the
-	 * only thing anybody ever does, purely because it prices well.
-	 */
-	varyRoute?: () => boolean;
 }
 
 export const DEFAULT_ROUTE_OPTIONS: RouteOptions = {
@@ -890,16 +880,6 @@ function withoutStandingStill(steps: RouteStep[], from: Vec2): RouteStep[] {
  */
 const WALL_ARRIVAL_BUCKET_PX = 200;
 
-/**
- * How much worse than the best a route may be and still be offered as the alternative — see
- * RouteOptions.varyRoute.
- *
- * Both a proportion and a floor, because the score mixes pixels of shortfall with weighted ticks of
- * travel and carries a flat penalty for not being a floor: a pure ratio is too strict when the best
- * score is near zero and too loose when it is large.
- */
-const VARIETY_RELATIVE_SLACK = 0.25;
-const VARIETY_ABSOLUTE_SLACK = 40;
 
 interface Node {
 	ledge: Ledge;
@@ -975,12 +955,8 @@ export function findRoute(ledges: Ledge[], from: Vec2, target: Vec2, startLedge?
 
 	// One entry per *arrival*, not per surface, and ordered on two keys. The surface score is the
 	// primary one and is deliberately identical for every arrival on the same ledge, so nothing about
-	// choosing between ledges changes. The travel still left along that surface breaks the tie.
-	//
-	// Which is what makes a genuine alternative available at all: reaching a wall by jumping to the
-	// height wanted and reaching it by stepping onto its foot are two arrivals on one ledge, and
-	// collapsing them — as an earlier version of this did — left the two best routes differing only
-	// in which *surface* they ended on. That is almost never what "a different way round" means.
+	// choosing between ledges changes. The travel still left along that surface breaks the tie, which
+	// is what lets a jump to the height wanted beat stepping onto the wall's foot and climbing.
 	const scored: { key: string; score: number; along: number }[] = [];
 	for (const [key, visit] of visited) {
 		const entry = perLedge.get(visit.ledge)!;
@@ -992,35 +968,9 @@ export function findRoute(ledges: Ledge[], from: Vec2, target: Vec2, startLedge?
 	if (scored.length === 0) return [];
 	scored.sort((a, b) => a.score - b.score || a.along - b.along);
 
-	const best = buildRoute(scored[0].key, visited, from, target, opts);
-	// A second way of going, when one genuinely sets off differently — see RouteOptions.varyRoute
-	// for why a router that always answers the same is right for one mascot and wrong for a roomful.
-	if (!opts.varyRoute) return best;
-	// Only against a rival worth having. A coin flip between two comparable routes is variety; a coin
-	// flip between the sensible one and one half again as long is just a mascot going the wrong way,
-	// which is what happened to pointer-following and to the corridor climb when this was unbounded.
-	const ceiling = scored[0].score + Math.max(VARIETY_ABSOLUTE_SLACK, Math.abs(scored[0].score) * VARIETY_RELATIVE_SLACK);
-	for (const candidate of scored.slice(1)) {
-		if (candidate.score > ceiling) break; // sorted, so nothing further can qualify either
-		const alternative = buildRoute(candidate.key, visited, from, target, opts);
-		if (!differentJourney(best, alternative)) continue;
-		return opts.varyRoute() ? alternative : best;
-	}
-	return best;
+	return buildRoute(scored[0].key, visited, from, target, opts);
 }
 
-/**
- * Whether two routes are actually different journeys, which is the only thing that makes offering a
- * choice between them worth anything.
- *
- * Compared along their whole length, not by their first step. The pair this exists for — jumping to
- * a height against walking to the foot and climbing — share an identical opening walk and diverge
- * only at the second leg, so a first-step test rejected the very case it was written for.
- */
-function differentJourney(a: RouteStep[], b: RouteStep[]): boolean {
-	if (a.length !== b.length) return true;
-	return a.some((step, i) => step.via !== b[i].via || Math.hypot(step.x - b[i].x, step.y - b[i].y) > 1);
-}
 
 /** Walks the predecessor chain back to the start, emitting the pair of steps each transfer implies:
  * travel along the surface you are on to the departure point, then the transfer itself. */
