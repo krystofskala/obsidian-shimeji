@@ -25,8 +25,16 @@ function collectAncestorConditions(el: Element, label: string): ExprNode[] {
 
 function parseNextBehaviors(el: Element, label: string): BehaviorNextDef[] {
 	const next: BehaviorNextDef[] = [];
-	// Add lives on the <NextBehavior> wrapper, not the individual <BehaviorReference> children.
-	for (const wrapper of Array.from(el.getElementsByTagName("NextBehavior"))) {
+	// Both spellings, because real packs use both and the schema allows both: the bundled pack
+	// writes <NextBehavior>, while shimeji-ee's own newer exports write <NextBehaviorList>.
+	// Reading only the first meant a pack written the other way silently lost *every* transition
+	// it declared — parsed fine, loaded fine, and then chained nothing, so every behaviour fell
+	// back to the ambient pool. Found in three of the user's own packs (BlackGabumon, Umbreon,
+	// Umbreon_Shiny), where it had been quietly happening all along.
+	//
+	// Add lives on the wrapper, not the individual <BehaviorReference> children.
+	const wrappers = [...Array.from(el.getElementsByTagName("NextBehavior")), ...Array.from(el.getElementsByTagName("NextBehaviorList"))];
+	for (const wrapper of wrappers) {
 		const add = wrapper.getAttribute("Add") === "true";
 		for (const refEl of Array.from(wrapper.getElementsByTagName("BehaviorReference"))) {
 			const refName = refEl.getAttribute("Name");

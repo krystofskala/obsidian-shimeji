@@ -109,14 +109,38 @@ async function tryLoadCharacter(app: App, name: string, imgDir: string, confDir:
 	// resolves and loads every Pose's sound while parsing actions.xml, long before any tick.
 	const soundSrcByFile = new Map<string, string>();
 	const unresolvedSounds: string[] = [];
+	// Built lazily, and only if some sound misses on its exact path — see the case-insensitive
+	// retry below for why it exists at all.
+	let byLowerName: Map<string, string> | undefined;
 	for (const file of collectPoseSounds(actionsXml)) {
-		for (const candidate of soundCandidates(root, name, imgDir, file)) {
+		const candidates = soundCandidates(root, name, imgDir, file);
+		for (const candidate of candidates) {
 			if (await existsFile(app, candidate)) {
 				soundSrcByFile.set(file, app.vault.adapter.getResourcePath(candidate));
 				break;
 			}
 		}
-		if (!soundSrcByFile.has(file)) unresolvedSounds.push(file);
+		if (soundSrcByFile.has(file)) continue;
+
+		// Retry ignoring case. Pack authors work on Windows, where the filesystem does not care, so
+		// a reference that does not match its file exactly is common and invisible to them — one of
+		// the user's own packs asks for "/rookieshout.wav" and ships "Rookieshout.wav", and plays it
+		// perfectly well in real shimeji-ee. The vault adapter is not so forgiving, and the sound
+		// simply vanished. Matching loosely costs a directory listing and only when something has
+		// already missed.
+		if (!byLowerName) {
+			byLowerName = new Map<string, string>();
+			for (const dir of new Set(candidates.map((c) => c.slice(0, c.lastIndexOf("/"))))) {
+				const listed = await app.vault.adapter.list(dir).catch(() => undefined);
+				for (const path of listed?.files ?? []) {
+					const base = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+					if (!byLowerName.has(base)) byLowerName.set(base, path);
+				}
+			}
+		}
+		const loose = byLowerName.get(file.replace(/^[/\\]+/, "").toLowerCase());
+		if (loose) soundSrcByFile.set(file, app.vault.adapter.getResourcePath(loose));
+		else unresolvedSounds.push(file);
 	}
 	// One line per pack, not one per file. A pack that declares sounds but ships none produces a
 	// dozen of these, and a wall of near-identical warnings at load is what makes real problems in

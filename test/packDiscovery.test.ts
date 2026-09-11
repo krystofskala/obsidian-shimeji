@@ -118,3 +118,36 @@ describe("an exported app bundle sitting next to classic packs", () => {
 		expect(packs[0].artScale).toBeCloseTo(0.25, 5);
 	});
 });
+
+describe("a sound whose reference does not match its filename exactly", () => {
+	const ACTIONS_WITH_SOUND = `<Mascot><ActionList><Action Name="Stand" Type="Animate"><Animation>
+	  <Pose Image="/shime1.png" ImageAnchor="64,128" Duration="4" Sound="/rookieshout.wav"/>
+	</Animation></Action></ActionList></Mascot>`;
+
+	function app(paths: string[]) {
+		const base = fakeApp(paths) as unknown as { vault: { adapter: { read: (p: string) => Promise<string> } } };
+		const inner = base.vault.adapter.read;
+		base.vault.adapter.read = async (p: string) => (p.endsWith("actions.xml") ? ACTIONS_WITH_SOUND : inner(p));
+		return base as never;
+	}
+
+	it("is still found when only the case differs", async () => {
+		// Pack authors work on Windows, where the filesystem does not care — one of the user's own
+		// packs asks for "/rookieshout.wav", ships "Rookieshout.wav", and plays it perfectly well in
+		// real shimeji-ee. The vault adapter is not so forgiving and the sound simply vanished.
+		const packs = await loadPacksFromFolder(
+			app(["Pack/conf/actions.xml", "Pack/conf/behaviors.xml", "Pack/img/Rookie/shime1.png", "Pack/sound/Rookieshout.wav"]),
+			"Pack",
+		);
+		expect(packs[0].resolveSound!("/rookieshout.wav")).toBe("app://Pack/sound/Rookieshout.wav");
+	});
+
+	it("still reports one that is genuinely absent", async () => {
+		// The loose match must not turn a missing file into a silent nothing.
+		const packs = await loadPacksFromFolder(
+			app(["Pack/conf/actions.xml", "Pack/conf/behaviors.xml", "Pack/img/Rookie/shime1.png"]),
+			"Pack",
+		);
+		expect(packs[0].resolveSound!("/rookieshout.wav")).toBeUndefined();
+	});
+});
