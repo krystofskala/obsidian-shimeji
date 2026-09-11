@@ -1025,7 +1025,7 @@ describe("BehaviorAI", () => {
 		expect(ai.currentBehaviorName).toBe("Gated");
 	});
 
-	it("respawns (random x, off-screen above) and forces Fall when nothing at all is eligible, instead of freezing forever", () => {
+	it("falls from where it stands when nothing is eligible but it is plainly on screen", () => {
 		const pack: MascotPack = {
 			...NOOP_PACK,
 			actions: new Map([
@@ -1048,15 +1048,19 @@ describe("BehaviorAI", () => {
 
 		ai.tick(mascot as unknown as Mascot, 0.02, ledges, AMBIENT, DEFAULT_ENGINE_CONFIG);
 
+		// Still does not freeze — Fall is selected and the mascot is let go of.
 		expect(ai.currentBehaviorName).toBe("Fall");
-		// Respawns to exactly -256, but this same ai.tick() call also immediately advances the
-		// freshly-started Fall by its own first tick's worth of gravity (this behavior selection
-		// and the first physics tick of whatever gets selected always happen within the same
-		// ai.tick() call whenever nothing was already running) — so "close to -256", not exact.
-		expect(mascot.physics.y).toBeLessThan(-250);
-		expect(mascot.physics.x).toBeGreaterThanOrEqual(0);
-		expect(mascot.physics.x).toBeLessThanOrEqual(1000); // the fake mascot's own viewport width
 		expect(mascot.physics.grounded).toBe(false);
+		// ...but it falls from where it was standing rather than being teleported above the window,
+		// which is what this used to assert. A mascot can reach a position no behaviour covers
+		// without being lost at all: hanging in the few pixels between an action's border reach and
+		// the adherence reach, which a card theme's 6px pane gaps produce as a matter of course.
+		// Respawning there is visible and jarring — reported as a mascot landing, vanishing on the
+		// spot, and coming down again somewhere else — while falling puts it on a real surface
+		// within a second and keeps where it was. Being genuinely off-screen still respawns; the
+		// test below covers that.
+		expect(mascot.physics.x).toBe(400);
+		expect(mascot.physics.y).toBeGreaterThan(499);
 	});
 
 	it("recovers (respawns, forces Fall) if a mascot ever drifts entirely off-screen mid-action", () => {

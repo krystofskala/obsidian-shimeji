@@ -297,6 +297,18 @@ export function findNearestFloorAt(ledges: Ledge[], x: number, y: number): Floor
 	return best;
 }
 
+/**
+ * How near a wall, ceiling or floor counts as touching it.
+ *
+ * One constant, because the two things that ask are two halves of one question: whether an action
+ * still has its border (ActionRunner's isBorderLost) and whether the mascot is describable as being
+ * on anything (updateWallCeilingAdherence). Disagreeing is not a rounding difference — it is a band
+ * in which a mascot runs a ceiling action while every "am I on something" condition a pack can ask
+ * answers false, which leaves nothing eligible when that action ends. See
+ * WALL_CEILING_ADHERENCE_REACH's own note for what that looked like in the wild.
+ */
+export const SURFACE_TOUCH_REACH = 8;
+
 export function findWallAt(ledges: Ledge[], x: number, y: number, side: "left" | "right", reach: number): WallLedge | undefined {
 	for (const ledge of ledges) {
 		if (ledge.kind !== "wall" || ledge.side !== side) continue;

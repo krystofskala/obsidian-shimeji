@@ -85,6 +85,23 @@ export function clampToCeiling(physics: MascotPhysics, ledges: Ledge[]): void {
 	}
 }
 
+/**
+ * How near a wall or ceiling counts as touching it, for the purpose of describing where the mascot
+ * *is*.
+ *
+ * Tighter than the reach an action's own border test uses (ActionRunner's LOST_GROUND_REACH, 8), and
+ * that gap has a consequence worth knowing about: between 4px and 8px a Ceiling-bordered action
+ * still considers itself attached while `currentCeiling` has already been cleared, so every
+ * condition a pack can ask — `activeIE.bottomBorder.isOn`, `ceiling.isOn`, `floor.isOn` — answers
+ * false at once. A card theme puts panes 6px apart, so a mascot hanging under one sits squarely in
+ * that band.
+ *
+ * Widening this to match was tried and is worse: at 8 a mascot adheres to walls it is merely near,
+ * and in a card theme (panes inset 3px from the window's own edge) that is most of the time —
+ * three separate cross-layout spot orders stalled against the window edges. The mismatch is real but
+ * narrow; what it used to *cause* is handled where the damage was, in behaviour selection, which no
+ * longer teleports a mascot that is plainly on screen.
+ */
 const WALL_CEILING_ADHERENCE_REACH = 4;
 
 /**

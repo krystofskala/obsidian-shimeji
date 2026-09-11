@@ -228,6 +228,116 @@ export function facingWall(wall: WallLedge, ledges: Ledge[], options?: Partial<R
 	return best;
 }
 
+export interface LeapThrough {
+	/** Where to push off from. */
+	from: Vec2;
+	/** The surface being left, so the caller knows what it is letting go of. */
+	ledge: Ledge;
+	/** Which way to shove: -1 left, +1 right. */
+	dir: -1 | 1;
+	/** Flight time to the spot, in ticks — the cost of the leap itself. */
+	ticks: number;
+}
+
+/** Where a hop launched from `(x0, y0)` in `dir` has got to after `t` ticks. Rises first, because
+ * the launch is upward, which is the whole reason it reaches sideways at all. */
+function arcAt(x0: number, y0: number, dir: number, t: number, opts: RouteOptions): Vec2 {
+	return { x: x0 + dir * opts.hop.vx * t, y: y0 - opts.hop.vy * t + (opts.gravity * t * t) / 2 };
+}
+
+/** Whether an arc runs into anything before its time is up: a wall crossed, or a floor landed on.
+ * Sampled per tick, which is the resolution the engine itself flies it at. */
+function arcObstructed(ledges: Ledge[], from: Vec2, dir: number, ticks: number, launchedFrom: Ledge, opts: RouteOptions): boolean {
+	const steps = Math.max(1, Math.ceil(ticks));
+	let prev = from;
+	for (let i = 1; i <= steps; i++) {
+		const at = arcAt(from.x, from.y, dir, (ticks * i) / steps, opts);
+		const lo = Math.min(prev.x, at.x);
+		const hi = Math.max(prev.x, at.x);
+		for (const l of ledges) {
+			if (l === launchedFrom) continue;
+			if (l.kind === "wall") {
+				// A wall at the launch x is one being pushed off, not flown into — by position, not
+				// by ledge identity, since adjacent panes put two faces at the very same x.
+				if (l.x === from.x) continue;
+				// Inclusive at both ends. Exclusive bounds left a wall sitting exactly on a sample
+				// point invisible: it failed `>= hi` on the step arriving at it and `<= lo` on the
+				// step leaving, so the one thing directly in the way was the one thing never seen.
+				if (l.x < lo || l.x > hi) continue;
+				if (at.y >= l.y1 && at.y <= l.y2) return true;
+			} else if (l.kind === "floor") {
+				// Only while descending, matching Fall's own `if (dy > 0)` landing test.
+				if (at.y <= prev.y) continue;
+				if (l.y < prev.y || l.y > at.y) continue;
+				if (spansX(l, at.x)) return true;
+			}
+		}
+		prev = at;
+	}
+	return false;
+}
+
+/**
+ * Plans a leap whose arc passes through the spot — the sideways answer to planDropThrough's
+ * straight one.
+ *
+ * The gap this closes was reported plainly: mascots "still don't choose to jump from a wall or pane
+ * to the target, they just go all the way up". They had no choice about it. planDropThrough skips
+ * walls outright and only ever falls straight down, so the single way to pass through a point was a
+ * ceiling directly above it — and the only ceiling spanning a point out in the open is the window's
+ * own, at the very top. Every order became a climb to the roof.
+ *
+ * A wall is the useful departure precisely because the height is *ours to choose*: given how far
+ * sideways the spot is, the flight time follows, and from that the exact height to let go at. So a
+ * spot a little way off a pane's edge is reached by climbing that edge to the right place and
+ * pushing off — which is both what a person would expect and a fraction of the distance.
+ *
+ * Floor ends are offered too, but they cannot be solved the same way: their height is fixed, so the
+ * arc either happens to pass through the spot or it does not.
+ */
+export function planLeapThrough(ledges: Ledge[], spot: Vec2, options?: Partial<RouteOptions>, avoid: readonly Vec2[] = []): LeapThrough | undefined {
+	const opts = { ...DEFAULT_ROUTE_OPTIONS, ...options };
+	const rejected = (from: Vec2): boolean => avoid.some((a) => distance(a, from) <= DROP_LINE_TOLERANCE);
+	let best: LeapThrough | undefined;
+
+	const consider = (from: Vec2, ledge: Ledge, dir: -1 | 1, ticks: number): void => {
+		if (!(ticks > 0) || !Number.isFinite(ticks)) return;
+		if (rejected(from)) return;
+		if (distance(arcAt(from.x, from.y, dir, ticks, opts), spot) > opts.arriveWithin) return;
+		if (arcObstructed(ledges, from, dir, ticks, ledge, opts)) return;
+		// Shortest flight wins: it is the least time in the air and the least that can go wrong.
+		if (!best || ticks < best.ticks) best = { from, ledge, dir, ticks };
+	};
+
+	for (const ledge of ledges) {
+		if (ledge.kind === "ceiling") continue; // hanging and letting go is planDropThrough's business
+
+		if (ledge.kind === "wall") {
+			const dx = spot.x - ledge.x;
+			if (Math.abs(dx) < 1) continue; // straight below a wall is a drop, not a leap
+			const dir: -1 | 1 = dx < 0 ? -1 : 1;
+			const ticks = Math.abs(dx) / opts.hop.vx;
+			// Solve the launch height from the flight time, which is what makes a wall worth using:
+			// y(t) = y0 - vy*t + g*t^2/2, so y0 = spot.y + vy*t - g*t^2/2.
+			const y0 = spot.y + opts.hop.vy * ticks - (opts.gravity * ticks * ticks) / 2;
+			if (y0 < ledge.y1 || y0 > ledge.y2) continue; // not a height this wall actually reaches
+			consider({ x: ledge.x, y: y0 }, ledge, dir, ticks);
+			continue;
+		}
+
+		// A floor's two ends, at whatever height they happen to be.
+		for (const end of ["x1", "x2"] as const) {
+			const offX = edgeStepOffX(ledges, ledge, end);
+			if (offX === undefined) continue;
+			const dx = spot.x - offX;
+			const dir: -1 | 1 = end === "x1" ? -1 : 1;
+			if (Math.sign(dx) !== dir) continue; // the spot is back over the floor it is leaving
+			consider({ x: ledge[end], y: ledge.y }, ledge, dir, Math.abs(dx) / opts.hop.vx);
+		}
+	}
+	return best;
+}
+
 /** How fast a wall can be got up, in px/tick: kicking off the wall opposite when there is one, and
  * the pack's own slow `ClimbWall` when there is not. */
 function climbSpeed(along: Ledge | undefined, ledges: Ledge[] | undefined, opts: RouteOptions): number {

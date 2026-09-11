@@ -5,7 +5,7 @@ import type { Mascot } from "../engine/Mascot";
 import { updateWallCeilingAdherence } from "../engine/nativeBehaviors";
 import type { PaneActions } from "../engine/PaneActions";
 import type { Random } from "../engine/Random";
-import { DEFAULT_ROUTE_OPTIONS, edgeStepOffX, facingWall, fallDurationTicks, findRoute, planDropThrough, pointOn, routeDurationTicks, type RouteOptions, type RouteVia, type ScriptedMove } from "../engine/Routing";
+import { DEFAULT_ROUTE_OPTIONS, edgeStepOffX, facingWall, fallDurationTicks, findRoute, planDropThrough, planLeapThrough, pointOn, routeDurationTicks, type RouteOptions, type RouteVia, type ScriptedMove } from "../engine/Routing";
 import { routeSpeedsFor, type RouteSpeeds } from "./packSpeeds";
 import type { EngineConfig, Ledge, PaneRef, Vec2 } from "../engine/types";
 import { ActionRunner, LOST_GROUND_REACH, type PushEnv } from "./ActionRunner";
@@ -257,7 +257,7 @@ export class BehaviorAI {
 	 * the order willed it.
 	 */
 	private spotPhase?:
-		| { kind: "dropFrom"; from: Vec2 }
+		| { kind: "dropFrom"; from: Vec2; push?: -1 | 1 }
 		| { kind: "toControl"; point: Vec2; paneRef?: PaneRef }
 		| { kind: "shapeDivider"; paneRef: PaneRef; targetY: number };
 
@@ -452,11 +452,15 @@ export class BehaviorAI {
 				if (arrivedAt(phase.from)) {
 					this.spotPhase = undefined;
 					this.spotSpentDrops.push(phase.from);
-					debugLog("spot order: letting go to fall through", { from: [Math.round(phase.from.x), Math.round(phase.from.y)], spot });
-					// Never a hop: planDropThrough picked this departure point precisely because the
-					// spot is straight below it, so any sideways shove would miss the thing the whole
-					// phase exists to reach.
-					return this.letGoAndFall(env, ledges, false);
+					debugLog(phase.push ? "spot order: pushing off to arc through" : "spot order: letting go to fall through", {
+						from: [Math.round(phase.from.x), Math.round(phase.from.y)],
+						spot,
+					});
+					// A plain drop is never a hop: planDropThrough picked that departure precisely
+					// because the spot is straight below it, so any sideways shove would miss the
+					// thing the phase exists to reach. A leap is the opposite — the sideways shove is
+					// the whole plan, and its direction comes from the router that solved the arc.
+					return this.letGoAndFall(env, ledges, phase.push !== undefined, phase.push);
 				}
 				const leg = routeTo(phase.from)[0];
 				if (leg) return this.startRouteAction(env, ledges, leg.via, leg.x, leg.y, 1);
@@ -564,12 +568,35 @@ export class BehaviorAI {
 	): "drop" | "surgery" | "neither" {
 		const attached = env.mascot.physics.currentFloor ?? env.mascot.physics.currentWall ?? env.mascot.physics.currentCeiling;
 
+		// Two ways to pass through a point: fall straight onto it, or arc through it sideways. Both
+		// are priced the same way — get to the departure, then however long the flight takes — and
+		// the cheaper one is taken. Before the leap existed the only answer was the straight fall,
+		// which needs a ceiling directly above, and the only ceiling above a point out in the open is
+		// the window's own: hence every order becoming a climb to the roof.
+		const reachable = (at: Vec2): number | undefined => {
+			const approach = findRoute(ledges, here, at, attached, routeOpts);
+			const end = approach.length > 0 ? approach[approach.length - 1] : here;
+			if (Math.hypot(end.x - at.x, end.y - at.y) > SPOT_ARRIVAL_PX) return undefined;
+			return routeDurationTicks(here, approach, routeOpts);
+		};
+
 		let dropTicks = Infinity;
+		let dropPush: -1 | 1 | undefined;
 		const drop = planDropThrough(ledges, spot, routeOpts, this.spotSpentDrops);
 		if (drop) {
-			const approach = findRoute(ledges, here, drop.from, attached, routeOpts);
-			const endsAtDeparture = approach.length === 0 || Math.hypot(approach[approach.length - 1].x - drop.from.x, approach[approach.length - 1].y - drop.from.y) <= SPOT_ARRIVAL_PX;
-			if (endsAtDeparture) dropTicks = routeDurationTicks(here, approach, routeOpts) + fallDurationTicks(spot.y - drop.from.y, routeOpts);
+			const approachTicks = reachable(drop.from);
+			if (approachTicks !== undefined) dropTicks = approachTicks + fallDurationTicks(spot.y - drop.from.y, routeOpts);
+		}
+
+		const leap = planLeapThrough(ledges, spot, routeOpts, this.spotSpentDrops);
+		let departure = drop?.from;
+		if (leap) {
+			const approachTicks = reachable(leap.from);
+			if (approachTicks !== undefined && approachTicks + leap.ticks < dropTicks) {
+				dropTicks = approachTicks + leap.ticks;
+				departure = leap.from;
+				dropPush = leap.dir;
+			}
 		}
 
 		let surgeryTicks = Infinity;
@@ -642,8 +669,8 @@ export class BehaviorAI {
 			goAsNearAsPossible: { ticks: Math.round(baseline.ticks), leaves: Math.round(baseline.shortfall) },
 		});
 
-		if (dropTicks <= surgeryTicks && Number.isFinite(dropTicks) && drop) {
-			this.spotPhase = { kind: "dropFrom", from: drop.from };
+		if (dropTicks <= surgeryTicks && Number.isFinite(dropTicks) && departure) {
+			this.spotPhase = { kind: "dropFrom", from: departure, push: dropPush };
 			return "drop";
 		}
 		if (Number.isFinite(surgeryTicks) && surgeryControl) {
@@ -813,13 +840,18 @@ export class BehaviorAI {
 	 * two ends the mascot is at. Ceiling and wall releases need no step at all — letting go of those
 	 * already leaves nothing underfoot.
 	 */
-	private letGoAndFall(env: PushEnv, ledges: Ledge[], push: boolean): boolean {
+	private letGoAndFall(env: PushEnv, ledges: Ledge[], push: boolean, pushDir?: -1 | 1): boolean {
 		const { physics } = env.mascot;
 		const floor = physics.currentFloor?.kind === "floor" ? physics.currentFloor : undefined;
 		// Which way the mascot leaves, so the hop below pushes away from the edge rather than back
 		// over the surface it is leaving. Zero when it is not stepping off anything identifiable.
-		let letGoDirection = 0;
-		if (floor && physics.grounded) {
+		//
+		// A caller may name the direction outright, and a planned leap always does: the router solved
+		// the whole arc, launch direction included, and letting this rederive it from the geometry
+		// would be a second opinion the plan never asked for. Pushing off a *wall* has no other
+		// source at all — there are no ends to be nearer one of.
+		let letGoDirection: number = pushDir ?? 0;
+		if (floor && physics.grounded && pushDir === undefined) {
 			const toLeft = Math.abs(physics.x - floor.x1);
 			const toRight = Math.abs(physics.x - floor.x2);
 			// Absolute, not relative: the mascot may still be up to SPOT_ARRIVAL_PX short of the edge
@@ -1042,7 +1074,7 @@ export class BehaviorAI {
 			this.justReachedSpotFlag = true;
 		}
 
-		const env = this.buildEnv(mascot, ambientPointer, config, paneActions, ledges);
+		let env = this.buildEnv(mascot, ambientPointer, config, paneActions, ledges);
 
 		// While following, re-aim as soon as the pointer has actually gone somewhere, rather than
 		// waiting for whatever the mascot is currently doing to finish.
@@ -1085,6 +1117,28 @@ export class BehaviorAI {
 		if (!this.runner.isRunning) this.startBehavior(this.pickNextBehavior(mascot, env), env);
 
 		const done = this.runner.isRunning ? this.runner.tick(env, dt, ledges) : true;
+
+		/*
+		 * Conditions decide what happens *next*, so they have to be asked about where the mascot is
+		 * now — and the context above was built before this tick's action ran.
+		 *
+		 * createRuntimeContext reads `grounded`, `currentFloor` and the rest eagerly, so it is a
+		 * snapshot, not a live view. On the tick that lands a mascot that snapshot still says
+		 * "airborne, nothing underfoot", and every ground behaviour a pack has is conditioned on
+		 * standing somewhere. So nothing was eligible, totalWeight came out zero, and
+		 * pickNextBehavior took the real engine's own last resort: respawn at a random x above the
+		 * window and fall again.
+		 *
+		 * Reported exactly as it looks — a mascot lands, on the floor or on a pane, vanishes on the
+		 * spot and comes down again somewhere else — and it showed up most after a hop off a pane
+		 * corner, because that is the case where the fall ends on the same tick the action does.
+		 * Ordinary falls usually survive it only because the pack's Fall sequence keeps running for
+		 * a few ticks past the landing, by which time the next tick has built a truthful context.
+		 *
+		 * Rebuilt only when an action has finished, which is the only moment anything below asks a
+		 * condition anything. Every other tick keeps the single build it always had.
+		 */
+		if (done) env = this.buildEnv(mascot, ambientPointer, config, paneActions, ledges);
 
 		/*
 		 * Losing your footing goes to Fall, whether or not the action considered itself finished.
@@ -1205,6 +1259,40 @@ export class BehaviorAI {
 	 * could spuriously already be "on"), then forced onto Fall. Without this, a mascot that
 	 * ever reached a state with nothing eligible would simply freeze forever — pickNextBehavior
 	 * would keep returning undefined every tick with nothing to show for it. */
+	/**
+	 * What to do when no behaviour is eligible — which is not always the same thing.
+	 *
+	 * The original's answer is to respawn: a random x above the window, then Fall. That is right for
+	 * a mascot which is genuinely lost, and wrong, visibly and jarringly, for one that is simply
+	 * somewhere the pack has nothing to say about. A mascot can reach such a place without being
+	 * lost at all: an action holds its border up to 8px away while `currentCeiling` is cleared past
+	 * 4, so in that band it runs a ceiling action with every "am I on something" condition answering
+	 * false. A card theme puts panes 6px apart, so hanging under one lands exactly there — and with
+	 * the pack's own behaviours reconstructed at such a position, *none* of them qualifies.
+	 *
+	 * So the recovery is split by what is actually wrong. Off-screen is lost, and respawns as
+	 * before. On-screen is not lost, and falls from where it stands: gravity puts it on a real
+	 * surface within a second, and the next selection has something to work with. No teleport, and
+	 * nothing about where it was is thrown away.
+	 *
+	 * Reported as a mascot landing — on a pane as often as the floor — then "immediately vanishing
+	 * and falling again from the ceiling somewhere else".
+	 */
+	private recoverWithNothingEligible(mascot: Mascot): BehaviorDef | undefined {
+		if (this.isOffScreen(mascot)) return this.respawnAndFall(mascot);
+		debugLog("nothing eligible, but on screen — falling from here rather than respawning", {
+			x: Math.round(mascot.physics.x),
+			y: Math.round(mascot.physics.y),
+		});
+		// Let go of whatever it was nominally holding: it is about to fall, and leaving stale
+		// attachments behind is how a fall ends on its first tick without going anywhere.
+		mascot.physics.grounded = false;
+		mascot.physics.currentFloor = undefined;
+		mascot.physics.currentWall = undefined;
+		mascot.physics.currentCeiling = undefined;
+		return this.forceFallBehavior();
+	}
+
 	private respawnAndFall(mascot: Mascot): BehaviorDef | undefined {
 		const viewport = mascot.getViewportSize();
 		mascot.physics.x = this.rng.range(0, viewport.width);
@@ -1356,7 +1444,7 @@ export class BehaviorAI {
 		// engine doesn't pick among the zero-weight leftovers at all — it respawns and forces
 		// Fall. Without this, weightedPick would have nothing usable to roll against.
 		const totalWeight = candidates.reduce((sum, c) => sum + c.weight, 0);
-		if (totalWeight <= 0) return this.respawnAndFall(mascot);
+		if (totalWeight <= 0) return this.recoverWithNothingEligible(mascot);
 
 		return this.rng.weightedPick(candidates);
 	}
