@@ -290,5 +290,47 @@ export async function loadPacksFromFolder(app: App, root: string): Promise<Masco
 			}
 		}
 	}
+	return disambiguate(packs, root);
+}
+
+/**
+ * Makes every pack id unique, qualifying only the ones that would otherwise clash.
+ *
+ * A pack's id is its folder name, and shimeji-ee's own template calls its character folder
+ * "Shimeji" — so any two downloaded bundles that never renamed it arrive as the same character.
+ * `availablePacks.find(p => p.id === ...)` takes the first, and the rest are simply unreachable: a
+ * pack that loads perfectly, appears in the list, and can never be spawned. Reported as a bundle
+ * that "doesn't load", which is exactly what it looks like from outside.
+ *
+ * Only clashing ids are touched, and a character sitting directly in this folder always keeps its
+ * plain one. Ids are what settings remember — active characters, disabled behaviours, custom
+ * content — so renaming a pack that was working would silently drop the user's choices for it.
+ * That leaves the qualified name for the newcomer, which had nothing saved under it anyway.
+ */
+function disambiguate(packs: MascotPack[], root: string): MascotPack[] {
+	const byId = new Map<string, MascotPack[]>();
+	for (const pack of packs) {
+		const group = byId.get(pack.id);
+		if (group) group.push(pack);
+		else byId.set(pack.id, [pack]);
+	}
+
+	for (const [id, group] of byId) {
+		if (group.length < 2) continue;
+		for (const pack of group) {
+			// `<root>/img/<name>` and nothing deeper: this one is a character of this folder in its
+			// own right, not one carried inside a bundle, so it is the one with a claim to the name.
+			if (pack.imgDir === `${root}/img/${id}`) continue;
+			// `<root>/img/<bundle>/img/<character>` — name it after the bundle it came in, which is
+			// the part the user recognises ("joker"), since the character half is the template
+			// default that caused the clash in the first place.
+			const parts = (pack.imgDir ?? "").split("/");
+			const bundle = parts.length >= 3 ? parts[parts.length - 3] : undefined;
+			if (!bundle) continue;
+			pack.id = `${bundle}/${id}`;
+			pack.name = `${bundle}/${pack.name}`;
+			console.info(`[obsidian-shimeji] two characters are both called "${id}"; the one in "${bundle}" is listed as "${pack.id}" so both can be used`);
+		}
+	}
 	return packs;
 }

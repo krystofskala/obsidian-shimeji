@@ -191,3 +191,56 @@ describe("a pack whose sprites were never extracted", () => {
 		expect(packs[0].imageFiles!.size).toBe(0);
 	});
 });
+
+describe("two bundles whose characters share a name", () => {
+	// shimeji-ee's own template calls its character folder "Shimeji", so any two downloads that
+	// never renamed it arrive as the same character. Exactly the user's case: a "joker" bundle
+	// whose character is "Shimeji", alongside a plain "Shimeji" pack.
+	const VAULT = [
+		"Pack/conf/actions.xml",
+		"Pack/conf/behaviors.xml",
+		"Pack/img/Shimeji/shime1.png",
+		"Pack/img/joker/conf/language.properties",
+		"Pack/img/joker/conf/actions.xml",
+		"Pack/img/joker/conf/behaviors.xml",
+		"Pack/img/joker/img/Shimeji/shime1.png",
+	];
+
+	it("keeps them both reachable instead of one shadowing the other", async () => {
+		// `availablePacks.find(p => p.id === ...)` takes the first match, so a duplicate id makes the
+		// loser unspawnable — it loads, it lists, and nothing can ever wear it.
+		const packs = await loadPacksFromFolder(fakeApp(VAULT), "Pack");
+		expect(packs).toHaveLength(2);
+		expect(new Set(packs.map((p) => p.id)).size).toBe(2);
+	});
+
+	it("names the newcomer after the bundle it arrived in", async () => {
+		const packs = await loadPacksFromFolder(fakeApp(VAULT), "Pack");
+		const nested = packs.find((p) => p.imgDir === "Pack/img/joker/img/Shimeji")!;
+		expect(nested.id).toBe("joker/Shimeji");
+		expect(nested.name).toBe("joker/Shimeji");
+	});
+
+	it("leaves the character that sits here in its own right alone", async () => {
+		// Ids are what settings remember — active characters, disabled behaviours, custom content —
+		// so renaming a pack that was already working would silently drop the user's choices for it.
+		const packs = await loadPacksFromFolder(fakeApp(VAULT), "Pack");
+		const direct = packs.find((p) => p.imgDir === "Pack/img/Shimeji")!;
+		expect(direct.id).toBe("Shimeji");
+	});
+
+	it("touches nothing when there is no clash", async () => {
+		const packs = await loadPacksFromFolder(
+			fakeApp([
+				"Pack/conf/actions.xml",
+				"Pack/conf/behaviors.xml",
+				"Pack/img/Umbreon/shime1.png",
+				"Pack/img/joker/conf/actions.xml",
+				"Pack/img/joker/conf/behaviors.xml",
+				"Pack/img/joker/img/Batman/shime1.png",
+			]),
+			"Pack",
+		);
+		expect(packs.map((p) => p.id).sort()).toEqual(["Batman", "Umbreon"]);
+	});
+});
