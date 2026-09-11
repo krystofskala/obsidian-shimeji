@@ -79,6 +79,17 @@ export class PackDriver implements MascotDriver {
 		return this.ai.isDraggable(mascot, ambientPointer, this.config);
 	}
 
+	/** Memoised: asked on every grab, and a pack's own actions never change under a driver — a
+	 * custom-content edit builds a new pack and re-attaches, bringing a fresh driver with it. */
+	private hasHotspots?: boolean;
+
+	declaresHotspots(): boolean {
+		this.hasHotspots ??= [...this.pack.actions.values()].some((action) =>
+			action.animations.some((variant) => variant.hotspots.length > 0),
+		);
+		return this.hasHotspots;
+	}
+
 	notifyReleased(mascot: Mascot, _wasThrown: boolean, ambientPointer: AmbientPointer): void {
 		this.ai.forceBehavior("Thrown", mascot, ambientPointer, this.config);
 	}

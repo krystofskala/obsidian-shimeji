@@ -115,6 +115,9 @@ export interface MascotDriver {
 	/** Whether the action the mascot is running right now permits being picked up — real
 	 * ActionBase's own per-action `Draggable` attribute. Absent means "no opinion" (draggable). */
 	isDraggable?(mascot: Mascot, ambientPointer: AmbientPointer): boolean;
+	/** Whether this character authors click targets of its own anywhere in its pack — see the
+	 * grab handler for why the invented feet-grab stands down when it does. */
+	declaresHotspots?(): boolean;
 	/** Jumps straight to a named behavior (e.g. a right-click "Set behavior" menu, or the
 	 * BornBehavior a Breed action starts a new sibling with) instead of the normal weighted pick. */
 	startNamedBehavior?(mascot: Mascot, name: string, ambientPointer: AmbientPointer): void;
@@ -550,7 +553,23 @@ export class Mascot {
 			// drag — see FEET_GRAB_FRACTION. Real Dragged reads its OffsetX/OffsetY fresh every
 			// tick, but those are pack constants there; here the value comes from the grab, and a
 			// mascot that flipped orientation mid-drag because the cursor drifted would be absurd.
-			this.dragUpsideDown = this.deps.config.upsideDownFeetDrag && this.grabbedByTheFeet(ev.clientY);
+			// Not on a character that authors its own click targets.
+			//
+			// Hotspots already take priority above, but priority is not enough on its own: a hotspot
+			// only fires while its behaviour is currently *eligible*, so aiming at one whose moment
+			// has not come falls straight through to here. Two of the user's packs put a hotspot
+			// exactly where the feet are — Eevee_Egg's Crack1-5 cover y 50..128 of a 128px sprite,
+			// PoopRookie's CleanUp covers y 90..128 — so tapping the egg to hatch it mostly got a
+			// dangling upside-down egg instead. Reported as the feet-grab "preventing me from
+			// interacting with the pack's official hotspots", which is exactly what it was doing.
+			//
+			// Deliberately the whole character rather than only the overlapping region: which
+			// hotspots are live changes with whatever animation is playing, so a region test would
+			// make the flip work sometimes and not others in the same spot. An author who placed
+			// click targets meant clicks there to mean something, and one predictable rule beats a
+			// precise but unpredictable one.
+			const authorsOwnClickTargets = this.driver?.declaresHotspots?.() ?? false;
+			this.dragUpsideDown = this.deps.config.upsideDownFeetDrag && !authorsOwnClickTargets && this.grabbedByTheFeet(ev.clientY);
 			this.el.setPointerCapture(ev.pointerId);
 			this.activePointerId = ev.pointerId;
 			this.isDragging = true;

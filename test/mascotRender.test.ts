@@ -476,4 +476,36 @@ describe("Mascot upside-down feet drag", () => {
 		expect(started).toEqual(["Tickle"]);
 		expect(mascot.isDraggedUpsideDown).toBe(false);
 	});
+
+	/**
+	 * Priority over hotspots was never enough on its own.
+	 *
+	 * A hotspot only fires while its behaviour is currently eligible, so aiming at one whose moment
+	 * has not come falls straight through to the grab. Two of the user's packs put a hotspot exactly
+	 * where the feet are — Eevee_Egg's Crack1-5 cover y 50..128 of a 128px sprite, PoopRookie's
+	 * CleanUp covers y 90..128 — so tapping the egg to hatch it mostly produced a dangling
+	 * upside-down egg instead of hatching anything.
+	 */
+	it("stands down on a character that authors click targets of its own", () => {
+		const mascot = draggableMascot();
+		mascot.attachDriver({
+			tick() {},
+			isBehaviorEnabled: () => false, // the hotspot's moment has not come, so it declines the click
+			declaresHotspots: () => true,
+		});
+		mascot.physics.facing = -1;
+		mascot.hotspots = [{ shape: "Rectangle", origin: { x: 0, y: 50 }, size: { x: 128, y: 78 }, behavior: "Crack1" }];
+
+		grabAt(mascot, 400, 290);
+		// Picked up as usual — by the head, not the ankles.
+		expect(mascot.isDraggedUpsideDown).toBe(false);
+	});
+
+	it("still flips on a character with no hotspots anywhere", () => {
+		// The feature is not withdrawn generally; only where an author has claimed the region.
+		const mascot = draggableMascot();
+		mascot.attachDriver({ tick() {}, declaresHotspots: () => false });
+		grabAt(mascot, 400, 290);
+		expect(mascot.isDraggedUpsideDown).toBe(true);
+	});
 });
