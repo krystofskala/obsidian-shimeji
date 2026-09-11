@@ -1,5 +1,5 @@
 import { CEILING_APPROACH_PX, findFloorBelow } from "./Ledges";
-import type { CeilingLedge, FloorLedge, Ledge, Vec2, WallLedge } from "./types";
+import { DEFAULT_ENGINE_CONFIG, ENGINE_FIXED_TICK_MS, type CeilingLedge, type FloorLedge, type Ledge, type Vec2, type WallLedge } from "./types";
 
 /**
  * Route-finding across the ledge graph — how a mascot gets from where it is standing to somewhere
@@ -150,7 +150,13 @@ export const DEFAULT_ROUTE_OPTIONS: RouteOptions = {
 	// `-20-random*5` up. Taken as the midpoint of those, so a routed hop looks like the jump the
 	// pack already performs rather than a second, tamer thing.
 	hop: { vx: 17, vy: 22 },
-	gravity: 2,
+	// Derived, not chosen. It was 2 against the engine's own 2.24px/tick^2 (1400px/s^2 at a 40ms
+	// tick) — 12% slow, which sounds harmless and is not: over a 500px drop the router planned an
+	// arc reaching 611px sideways where the engine flies 563. A 48px miss, against a 40px arrival
+	// tolerance, so a planned leap missed *by construction* every time and the mascot fell back on
+	// climbing to the ceiling. Reported as "they jump quite nicely, unfortunately it doesn't hit and
+	// then they have to climb to the ceiling and drop from it anyway".
+	gravity: (DEFAULT_ENGINE_CONFIG.gravity * ENGINE_FIXED_TICK_MS * ENGINE_FIXED_TICK_MS) / 1_000_000,
 	jumpOverhead: 6,
 	chimneyHopUp: 120,
 	minChimneyGap: 3,

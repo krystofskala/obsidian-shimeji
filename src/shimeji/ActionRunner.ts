@@ -43,6 +43,9 @@ interface Frame {
 	/** Breed only: guards requestSibling so a multi-Pose birth animation spawns exactly one
 	 * sibling on its first tick rather than once per pose frame. */
 	bredAlready: boolean;
+	/** tickMove only, for a Floor border: consecutive ticks spent off the ground — see
+	 * MOVE_AIRBORNE_GRACE_TICKS. */
+	airborneTicks?: number;
 	/** Scan and Breed interval actions: whole ticks elapsed in this frame. Real ActionBase keeps a
 	 * `time` counter incremented once per tick and the Breed delegate's own interval test is
 	 * `action.getTime() % getBornInterval() == 0`, so this has to be a tick count, not elapsed ms. */
@@ -227,6 +230,11 @@ function parseSidebarMode(raw: string): SidebarMode | undefined {
  * attachment), matching the native fallback state machine's own climb-wall tuning, so ordinary
  * per-tick float drift while climbing can't spuriously read as having lost the wall. */
 export const LOST_GROUND_REACH = SURFACE_TOUCH_REACH;
+
+/** How long a Floor-bordered Move may be off the ground before it counts as falling rather than
+ * stepping. Four ticks is about a sixth of a second — longer than any crest or corner correction,
+ * far shorter than a fall anyone could see. */
+const MOVE_AIRBORNE_GRACE_TICKS = 4;
 
 /** How long a randomly-picked animation option (see the wizard's AnimationOptionsModal) stays
  * locked in before it becomes eligible to be re-rolled — real elapsed time the action is actually
@@ -778,7 +786,24 @@ export class ActionRunner {
 		// Deliberately narrow. It cannot disturb a hold that declares a Duration (every ordinary
 		// Sit/Stand in a real pack does, typically 20-60s), nor one that began on solid ground, so
 		// the only holds it can end are the ones that had no other way of ending at all.
-		if (frame.action.borderType === "Floor" && frame.holdBeganAirborne && physics.grounded && durationOverride === undefined) return true;
+		if (frame.action.borderType === "Floor" && frame.holdBeganAirborne && durationOverride === undefined) {
+			// Landed: the hold has done its one job and is finished.
+			if (physics.grounded) return true;
+			// Still falling. In the real engine a Floor border that is not under the mascot is a
+			// LostGroundException like any other, caught and turned into Fall — and that catch is
+			// where the falling art comes from. Without it the pack's own FallFromWall (`Offset` off
+			// the wall, then a plain `Stand`) showed the standing frame the whole way down.
+			// Reported as mascots that "let go and fall in a frozen standing pose, with no fall
+			// animation". They still settle on the floor exactly as before: Fall does the settling
+			// instead of this, which is what the original does too.
+			//
+			// Scoped to a hold that *began* in mid-air and names no Duration of its own, which is
+			// precisely the shape a pack uses to mean "come down from there". A hold that started on
+			// solid ground keeps re-anchoring as it always did, and one carrying a Duration is left
+			// alone entirely.
+			this.lostGroundFlag = true;
+			return true;
+		}
 
 		frame.holdElapsedMs += dt * 1000;
 		return frame.holdElapsedMs >= effectiveDurationMs;
@@ -858,6 +883,22 @@ export class ActionRunner {
 			physics.currentFloor = undefined;
 		} else {
 			this.stickToFloorIfBordered(frame, env, dt, ledges);
+			// Same rule as a Floor-bordered hold: a floor this action is bordered on but which is not
+			// under the mascot is lost ground, which the engine turns into Fall. Without it a mascot
+			// that walks off an edge keeps playing its walk cycle all the way down — the same
+			// "falling in the wrong animation" the hold case produced, just with a different action.
+			//
+			// Counted rather than tested outright, because a Move is airborne for a tick at a time in
+			// perfectly ordinary places: cresting a step, or the tick after a Wall action cleared
+			// `grounded`. Only a fall long enough to see counts.
+			// Only a Floor border, matching stickToFloorIfBordered's own guard. This branch is
+			// "not Wall and not Ceiling", which includes an action declaring no border at all — and
+			// one of those has no floor to lose.
+			frame.airborneTicks = frame.action.borderType === "Floor" && !env.mascot.physics.grounded ? (frame.airborneTicks ?? 0) + 1 : 0;
+			if ((frame.airborneTicks ?? 0) > MOVE_AIRBORNE_GRACE_TICKS) {
+				this.lostGroundFlag = true;
+				return true;
+			}
 		}
 
 		const targetX = numOrUndefined(frame.locals.TargetX);

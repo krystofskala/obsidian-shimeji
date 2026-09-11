@@ -114,7 +114,15 @@ describe("ActionRunner", () => {
 			actions: new Map([["Stand", action({ name: "Stand", type: "Stay", borderType: "Floor", animations: animOf([{ image: "/stand.png", durationMs: 10 }]) })]]),
 		};
 
-		it("ends once it has settled onto the floor, rather than standing there forever", () => {
+		it("hands an airborne start straight to Fall rather than standing in the air", () => {
+			// It used to ride the whole way down itself, which settled the mascot correctly and
+			// looked wrong doing it: the standing frame held for the entire descent, with no falling
+			// art at all. Reported as mascots that "let go and fall in a frozen standing pose".
+			//
+			// The real engine has no such path — a Floor border that is not under the mascot is a
+			// LostGroundException, and the catch turns it into Fall, which is where the falling art
+			// comes from. The landing still happens; Fall does it. See the sibling test below for
+			// that end of it.
 			const runner = new ActionRunner(pack);
 			const mascot = makeFakeMascot();
 			// Just left a wall partway up, exactly as FallFromWall's Offset leaves it.
@@ -123,14 +131,10 @@ describe("ActionRunner", () => {
 			const env = envFor(pack, mascot);
 			runner.start("Stand", env);
 
-			let done = false;
-			for (let i = 0; i < 500 && !done; i++) done = runner.tick(env, 0.016, [floorAt(300)]);
-
-			expect(done).toBe(true);
-			// It still settles all the way down first — the landing is the point, and aborting the
-			// hold mid-air instead would leave the mascot frozen in the air.
-			expect(mascot.physics.y).toBe(300);
-			expect(mascot.physics.grounded).toBe(true);
+			expect(runner.tick(env, 0.016, [floorAt(300)])).toBe(true);
+			expect(runner.lostGround).toBe(true);
+			// Nowhere near the floor yet — it is Fall's job to cover the rest.
+			expect(mascot.physics.y).toBeLessThan(300);
 		});
 
 		it("keeps holding when it began on solid ground, since nothing was ever wrong with it", () => {
@@ -336,25 +340,36 @@ describe("ActionRunner", () => {
 		expect(mascot.physics.grounded).toBe(true);
 	});
 
-	it("a Floor-bordered Stay settles onto the real floor instead of freezing mid-air (FallFromWall's pattern: no explicit Falling step)", () => {
+	it("still ends up standing on the real floor after coming off a wall (FallFromWall's pattern, end to end)", () => {
+		// The guarantee this has always been about — a mascot that leaves a wall partway up does not
+		// freeze at wall height — now spread across two parts: the Floor-bordered hold reports lost
+		// ground, and BehaviorAI's forced Fall does the descent and the landing. Driven through
+		// BehaviorAI rather than the runner alone, because that is where the two halves meet.
 		const pack: MascotPack = {
 			...NOOP_PACK,
 			actions: new Map([
 				["Stand", action({ name: "Stand", type: "Stay", borderType: "Floor", animations: animOf([{ image: "/stand.png", durationMs: 100000 }]) })],
+				["Fall", action({ name: "Fall", type: "Embedded", embeddedName: "Fall", animations: animOf([{ image: "/fall.png", durationMs: 250 }]) })],
+			]),
+			// Spelled out rather than via the `behavior` helper, which lives in the BehaviorAI
+			// describe further down and is not in scope here.
+			behaviors: new Map<string, BehaviorDef>([
+				["Stand", { name: "Stand", frequency: 100, nextBehaviors: [], toggleable: false }],
+				["Fall", { name: "Fall", frequency: 0, nextBehaviors: [], toggleable: false }],
 			]),
 		};
-		const runner = new ActionRunner(pack);
+		const ai = new BehaviorAI(pack, new Random(1));
 		const mascot = makeFakeMascot();
 		// Simulate having just left a wall partway up: well above the real floor, not grounded.
 		mascot.physics.y = 20;
 		mascot.physics.grounded = false;
-		const env = envFor(pack, mascot);
-		runner.start("Stand", env);
 		const ledges = [{ kind: "floor" as const, y: 300, x1: -1000, x2: 1000, source: "window" as const }];
 
-		for (let i = 0; i < 200; i++) runner.tick(env, 0.016, ledges);
+		for (let i = 0; i < 200; i++) ai.tick(mascot as unknown as Mascot, 0.016, ledges, AMBIENT, DEFAULT_ENGINE_CONFIG);
 		expect(mascot.physics.y).toBe(300);
 		expect(mascot.physics.grounded).toBe(true);
+		// ...and it looked like falling on the way, which is the whole point of the change.
+		expect(mascot.shownImages).toContain("resolved:/fall.png");
 	});
 
 	it("a Floor-bordered action already resting on the floor does not drift or lose grounded state", () => {

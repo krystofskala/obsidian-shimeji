@@ -246,10 +246,17 @@ describe("dropping versus hopping off an edge", () => {
 
 	it("never hops through a floor to reach one below it", () => {
 		// A middle floor squarely under the arc: the hop has to land on that, not pass through it.
+		//
+		// It has to be placed where the arc *actually* comes down, which is further out than it
+		// looks: a hop rises before it falls, so over x=600..900 this one is still between y=92 and
+		// y=200 — above the floor at 400, not under it. It was at x=600..900 while the router ran 12%
+		// light on gravity and the arcs it drew were correspondingly longer and lazier; once gravity
+		// matched the engine's, the same hop cleared that floor entirely and the test was asserting
+		// about a floor nothing was aimed at. 1000..1300 is where the arc meets y=400.
 		const ledges: Ledge[] = [
 			{ kind: "floor", y: 200, x1: 300, x2: 600, source: "pane" },
-			{ kind: "floor", y: 400, x1: 600, x2: 900, source: "pane" },
-			{ kind: "floor", y: 800, x1: 0, x2: 1200, source: "window" },
+			{ kind: "floor", y: 400, x1: 1000, x2: 1300, source: "pane" },
+			{ kind: "floor", y: 800, x1: 0, x2: 1400, source: "window" },
 		];
 		const top = ledges[0] as Extract<Ledge, { kind: "floor" }>;
 		const hop = findRoute(ledges, { x: 590, y: 200 }, { x: 1100, y: 800 }, top).find((s) => s.via === "hop");
