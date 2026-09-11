@@ -838,12 +838,15 @@ export default class ShimejiPlugin extends Plugin {
 		this.availablePacks = this.basePacks.map((p) =>
 			mergeCustomContent(mergeCustomContent(p, paneWrangling), this.settings.customContent[p.id]),
 		);
-		for (const pack of this.availablePacks) this.reportMissingArt(pack);
+		// Deliberately not awaited and deliberately deferred: this is a diagnostic, and nothing about
+		// having the packs ready should wait on it.
+		window.setTimeout(() => {
+			for (const pack of this.availablePacks) void this.reportMissingArt(pack);
+		}, 0);
 	}
 
-	/** Which packs have already been reported on, so re-deriving availablePacks (every settings
-	 * change does) does not repeat itself. Keyed by what was reported, so a pack that changes still
-	 * gets a fresh line. */
+	/** Packs already reported on, so re-deriving availablePacks — every settings change does — does
+	 * not repeat the listing or the warning. */
 	private reportedMissingArt = new Set<string>();
 
 	/**
@@ -860,9 +863,23 @@ export default class ShimejiPlugin extends Plugin {
 	 * pack whose sprites had not been extracted produced 126 bare ERR_FILE_NOT_FOUND in the console
 	 * and no explanation, and an incomplete download was indistinguishable from a plugin bug.
 	 */
-	private reportMissingArt(pack: MascotPack): void {
-		const available = pack.imageFiles;
-		if (!available || available.size === 0) return; // nothing listed: cannot tell, so say nothing
+	private async reportMissingArt(pack: MascotPack): Promise<void> {
+		if (!pack.imgDir || this.reportedMissingArt.has(pack.id)) return;
+		this.reportedMissingArt.add(pack.id);
+
+		// Listed here rather than while the pack is being loaded, and that placement is the point:
+		// one directory listing per pack is nothing on a desktop and is emphatically not nothing on
+		// a phone, where forty packs across sixty megabytes of sprites turned plugin startup into a
+		// visible stall. A diagnostic must not cost the thing it is diagnosing — so this runs once,
+		// after everything is already up, and never blocks a load.
+		const available = new Set<string>();
+		try {
+			const listed = await this.app.vault.adapter.list(pack.imgDir);
+			for (const path of listed.files) available.add(path.slice(path.lastIndexOf("/") + 1).toLowerCase());
+		} catch {
+			return; // unreadable folder: cannot tell, so say nothing
+		}
+		if (available.size === 0) return;
 
 		const missing = new Set<string>();
 		for (const action of pack.actions.values()) {
@@ -876,9 +893,7 @@ export default class ShimejiPlugin extends Plugin {
 			}
 		}
 
-		const signature = `${pack.id}:${missing.size}`;
-		if (missing.size === 0 || this.reportedMissingArt.has(signature)) return;
-		this.reportedMissingArt.add(signature);
+		if (missing.size === 0) return;
 		const names = [...missing];
 		console.warn(
 			`[obsidian-shimeji] pack "${pack.name}": ${names.length} image(s) used by its animations are not in "${pack.imgDir ?? "its image folder"}". ` +

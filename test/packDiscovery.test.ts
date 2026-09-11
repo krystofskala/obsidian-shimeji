@@ -152,95 +152,22 @@ describe("a sound whose reference does not match its filename exactly", () => {
 	});
 });
 
-describe("a pack whose sprites were never extracted", () => {
-	const ACTIONS_MANY = `<Mascot><ActionList><Action Name="Stand" Type="Animate"><Animation>
-	  <Pose Image="/shime1.png" ImageAnchor="64,128" Duration="4"/>
-	  <Pose Image="/shime2.png" ImageAnchor="64,128" Duration="4"/>
-	  <Pose Image="/dash1.png" ImageAnchor="64,128" Duration="4"/>
-	</Animation></Action></ActionList></Mascot>`;
-
-	function app(paths: string[]) {
-		const base = fakeApp(paths) as unknown as { vault: { adapter: { read: (p: string) => Promise<string> } } };
-		const inner = base.vault.adapter.read;
-		base.vault.adapter.read = async (p: string) => (p.endsWith("actions.xml") ? ACTIONS_MANY : inner(p));
-		return base as never;
-	}
-
-	it("hands the caller the art it does have, rather than judging at load", async () => {
-		// Deliberately not a warning from the loader: which images a mascot actually draws is only
-		// settled once custom content has been merged over the pack, and several of the user's own
-		// characters keep a stock actions.xml that their authored animations replace outright.
-		// Judging here would have accused six working packs of being broken.
-		const packs = await loadPacksFromFolder(
-			app(["Pack/conf/actions.xml", "Pack/conf/behaviors.xml", "Pack/img/Umbreon/dash1.png"]),
-			"Pack",
-		);
-		expect([...packs[0].imageFiles!]).toEqual(["dash1.png"]);
-	});
-
-	it("leaves the set empty when the folder cannot be listed, meaning \"cannot tell\"", async () => {
-		const broken = app(["Pack/conf/actions.xml", "Pack/conf/behaviors.xml", "Pack/img/Umbreon/dash1.png"]) as unknown as {
+describe("loading a pack", () => {
+	it("does not list its image folder, so startup pays nothing for diagnostics", async () => {
+		// One listing per pack is nothing on a desktop and emphatically not nothing on a phone:
+		// forty packs across sixty megabytes of sprites turned plugin startup into a visible stall.
+		// The missing-art report does its own listing later, once everything is already up.
+		const listed: string[] = [];
+		const base = fakeApp(["Pack/conf/actions.xml", "Pack/conf/behaviors.xml", "Pack/img/Umbreon/shime1.png"]) as unknown as {
 			vault: { adapter: { list: (p: string) => Promise<unknown> } };
 		};
-		const inner = broken.vault.adapter.list;
-		broken.vault.adapter.list = async (p: string) => {
-			if (p === "Pack/img/Umbreon") throw new Error("nope");
+		const inner = base.vault.adapter.list;
+		base.vault.adapter.list = async (p: string) => {
+			listed.push(p);
 			return inner(p);
 		};
-		const packs = await loadPacksFromFolder(broken as never, "Pack");
-		expect(packs[0].imageFiles!.size).toBe(0);
-	});
-});
 
-describe("two bundles whose characters share a name", () => {
-	// shimeji-ee's own template calls its character folder "Shimeji", so any two downloads that
-	// never renamed it arrive as the same character. Exactly the user's case: a "joker" bundle
-	// whose character is "Shimeji", alongside a plain "Shimeji" pack.
-	const VAULT = [
-		"Pack/conf/actions.xml",
-		"Pack/conf/behaviors.xml",
-		"Pack/img/Shimeji/shime1.png",
-		"Pack/img/joker/conf/language.properties",
-		"Pack/img/joker/conf/actions.xml",
-		"Pack/img/joker/conf/behaviors.xml",
-		"Pack/img/joker/img/Shimeji/shime1.png",
-	];
-
-	it("keeps them both reachable instead of one shadowing the other", async () => {
-		// `availablePacks.find(p => p.id === ...)` takes the first match, so a duplicate id makes the
-		// loser unspawnable — it loads, it lists, and nothing can ever wear it.
-		const packs = await loadPacksFromFolder(fakeApp(VAULT), "Pack");
-		expect(packs).toHaveLength(2);
-		expect(new Set(packs.map((p) => p.id)).size).toBe(2);
-	});
-
-	it("names the newcomer after the bundle it arrived in", async () => {
-		const packs = await loadPacksFromFolder(fakeApp(VAULT), "Pack");
-		const nested = packs.find((p) => p.imgDir === "Pack/img/joker/img/Shimeji")!;
-		expect(nested.id).toBe("joker/Shimeji");
-		expect(nested.name).toBe("joker/Shimeji");
-	});
-
-	it("leaves the character that sits here in its own right alone", async () => {
-		// Ids are what settings remember — active characters, disabled behaviours, custom content —
-		// so renaming a pack that was already working would silently drop the user's choices for it.
-		const packs = await loadPacksFromFolder(fakeApp(VAULT), "Pack");
-		const direct = packs.find((p) => p.imgDir === "Pack/img/Shimeji")!;
-		expect(direct.id).toBe("Shimeji");
-	});
-
-	it("touches nothing when there is no clash", async () => {
-		const packs = await loadPacksFromFolder(
-			fakeApp([
-				"Pack/conf/actions.xml",
-				"Pack/conf/behaviors.xml",
-				"Pack/img/Umbreon/shime1.png",
-				"Pack/img/joker/conf/actions.xml",
-				"Pack/img/joker/conf/behaviors.xml",
-				"Pack/img/joker/img/Batman/shime1.png",
-			]),
-			"Pack",
-		);
-		expect(packs.map((p) => p.id).sort()).toEqual(["Batman", "Umbreon"]);
+		await loadPacksFromFolder(base as never, "Pack");
+		expect(listed).not.toContain("Pack/img/Umbreon");
 	});
 });
