@@ -141,7 +141,10 @@ describe("findRoute", () => {
 		const paneTop = floorAt(ledges, 700)!;
 		const route = findRoute(ledges, { x: 600, y: 700 }, { x: 1100, y: 800 }, paneTop);
 
-		expect(route.some((s) => s.via === "drop")).toBe(true);
+		// Drop or hop: with the arc modelled honestly a hop off this edge comes down close to the
+		// target, so it wins — a better answer to the same question. What is asserted is that it
+		// gets *off* the raised floor at all, which is what used to fail.
+		expect(route.some((s) => s.via === "drop" || s.via === "hop")).toBe(true);
 		const last = route[route.length - 1];
 		expect(last.y).toBeCloseTo(800, 0);
 		expect(last.x).toBeCloseTo(1100, 0);
@@ -252,15 +255,14 @@ describe("dropping versus hopping off an edge", () => {
 	it("never hops through a floor to reach one below it", () => {
 		// A middle floor squarely under the arc: the hop has to land on that, not pass through it.
 		//
-		// It has to be placed where the arc *actually* comes down, which is further out than it
-		// looks: a hop rises before it falls, so over x=600..900 this one is still between y=92 and
-		// y=200 — above the floor at 400, not under it. It was at x=600..900 while the router ran 12%
-		// light on gravity and the arcs it drew were correspondingly longer and lazier; once gravity
-		// matched the engine's, the same hop cleared that floor entirely and the test was asserting
-		// about a floor nothing was aimed at. 1000..1300 is where the arc meets y=400.
+		// It has to be placed where the arc *actually* comes down, and that has moved twice as the
+		// router's model got closer to the engine's: once when gravity stopped being 12% light, and
+		// again when air resistance was modelled at all. With resistance the reach converges — a
+		// 200px drop carries 246px sideways, not the 500-odd a frictionless arc suggests — so this
+		// sits at 800..950, where the hop off x=600 now meets y=400.
 		const ledges: Ledge[] = [
 			{ kind: "floor", y: 200, x1: 300, x2: 600, source: "pane" },
-			{ kind: "floor", y: 400, x1: 1000, x2: 1300, source: "pane" },
+			{ kind: "floor", y: 400, x1: 800, x2: 950, source: "pane" },
 			{ kind: "floor", y: 800, x1: 0, x2: 1400, source: "window" },
 		];
 		const top = ledges[0] as Extract<Ledge, { kind: "floor" }>;
@@ -352,7 +354,10 @@ describe("route cost is time, not distance", () => {
 
 		// 300px of climbing is ~470 ticks at 0.64px/tick; the same drop is ~17. Nothing about the
 		// distances says that — only the speeds do.
-		expect(route.some((s) => s.via === "drop")).toBe(true);
+		// Drop or hop: with the arc modelled honestly a hop off this edge comes down close to the
+		// target, so it wins — a better answer to the same question. What is asserted is that it
+		// gets *off* the raised floor at all, which is what used to fail.
+		expect(route.some((s) => s.via === "drop" || s.via === "hop")).toBe(true);
 		expect(route.some((s) => s.via === "climb")).toBe(false);
 	});
 

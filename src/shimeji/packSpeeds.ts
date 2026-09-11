@@ -83,3 +83,38 @@ export function routeSpeedsFor(resolve: (name: string) => ActionDef | undefined,
 	}
 	return speeds;
 }
+
+/** The three numbers a `Fall` reads off its own action, in the per-tick units the router works in. */
+export interface FallPhysics {
+	gravity: number;
+	registanceX: number;
+	registanceY: number;
+}
+
+/**
+ * Reads gravity and air resistance from the pack's own `Falling` action.
+ *
+ * Real `Fall.java` has no pack-wide gravity: every Fall reads its own `Gravity` attribute, and the
+ * engine config only matters for embedded types that have none (see nativeAdapter's
+ * withEffectiveGravity). So these have to come from the pack, or the router is predicting a
+ * different fall from the one the mascot will take.
+ *
+ * That mattered more than it sounds. Unmodelled, the 5%-per-tick horizontal resistance let the
+ * router predict 561px of sideways travel on a 500px drop where the engine flies 289 — so a hop
+ * planned to pass through a spot passed nowhere near it, the order never registered as reached, and
+ * the mascot had to fall back on climbing to the ceiling and dropping. Reported exactly that way.
+ *
+ * Defaults are Fall.java's own, which is what the engine uses when the attribute is absent.
+ */
+export function fallPhysicsFor(falling: ActionDef | undefined, fallback: FallPhysics): FallPhysics {
+	const read = (name: string, whenAbsent: number): number => {
+		const raw = falling?.params?.[name];
+		const value = raw === undefined ? Number.NaN : Number(raw);
+		return Number.isFinite(value) ? value : whenAbsent;
+	};
+	return {
+		gravity: read("Gravity", fallback.gravity),
+		registanceX: read("RegistanceX", fallback.registanceX),
+		registanceY: read("RegistanceY", fallback.registanceY),
+	};
+}

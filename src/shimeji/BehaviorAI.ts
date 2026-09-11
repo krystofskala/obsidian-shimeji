@@ -6,7 +6,7 @@ import { updateWallCeilingAdherence } from "../engine/nativeBehaviors";
 import type { PaneActions } from "../engine/PaneActions";
 import type { Random } from "../engine/Random";
 import { DEFAULT_ROUTE_OPTIONS, edgeStepOffX, facingWall, fallDurationTicks, findRoute, planDropThrough, planLeapThrough, pointOn, routeDurationTicks, type RouteOptions, type RouteVia, type ScriptedMove } from "../engine/Routing";
-import { routeSpeedsFor, type RouteSpeeds } from "./packSpeeds";
+import { fallPhysicsFor, routeSpeedsFor, type FallPhysics, type RouteSpeeds } from "./packSpeeds";
 import type { EngineConfig, Ledge, PaneRef, Vec2 } from "../engine/types";
 import { ActionRunner, LOST_GROUND_REACH, type PushEnv } from "./ActionRunner";
 import { evaluateCondition } from "./Expression";
@@ -439,7 +439,7 @@ export class BehaviorAI {
 		const attached = physics.currentFloor ?? physics.currentWall ?? physics.currentCeiling;
 		// travelTimeWeight near zero: an order's promise is reaching the point, so a surface that gets
 		// there is worth a long climb. Following uses the default, where it is not — see RouteOptions.
-		const routeOpts = { arriveWithin: SPOT_ARRIVAL_PX, travelTimeWeight: 0.05, speeds: this.routeSpeeds };
+		const routeOpts = { arriveWithin: SPOT_ARRIVAL_PX, travelTimeWeight: 0.05, speeds: this.routeSpeeds, ...this.fallPhysics };
 		const routeTo = (target: Vec2, graph: Ledge[] = ledges) =>
 			graph.length > 0 ? findRoute(graph, here, target, attached, routeOpts) : [];
 
@@ -720,7 +720,7 @@ export class BehaviorAI {
 		// next behaviour-end will roll again, and by then the crowd may have moved on regardless.
 		if (Math.abs(targetX - physics.x) < ROAM_ARRIVAL_PX) return false;
 
-		const route = findRoute(ledges, { x: physics.x, y: physics.y }, { x: targetX, y: physics.y }, floor, { arriveWithin: ROAM_ARRIVAL_PX, speeds: this.routeSpeeds });
+		const route = findRoute(ledges, { x: physics.x, y: physics.y }, { x: targetX, y: physics.y }, floor, { arriveWithin: ROAM_ARRIVAL_PX, speeds: this.routeSpeeds, ...this.fallPhysics });
 		const next = route[0];
 		if (!next) return false;
 		if (!this.startRouteAction(env, ledges, next.via, next.x, next.y, route.length)) return false;
@@ -763,7 +763,7 @@ export class BehaviorAI {
 
 		const { physics } = env.mascot;
 		const attached = physics.currentFloor ?? physics.currentWall ?? physics.currentCeiling;
-		const route = findRoute(ledges, { x: physics.x, y: physics.y }, this.roamTarget, attached, { arriveWithin: ROAM_ARRIVAL_PX, speeds: this.routeSpeeds });
+		const route = findRoute(ledges, { x: physics.x, y: physics.y }, this.roamTarget, attached, { arriveWithin: ROAM_ARRIVAL_PX, speeds: this.routeSpeeds, ...this.fallPhysics });
 		const next = route[0];
 		if (!next) {
 			// Arrived, or nothing connects. Either way this expedition is over; the pack's own
@@ -794,7 +794,7 @@ export class BehaviorAI {
 		// to move would be pure churn.
 		this.pursuitAimedAt = { x: cursor.x, y: cursor.y };
 		const attached = physics.currentFloor ?? physics.currentWall ?? physics.currentCeiling;
-		const route = ledges.length > 0 ? findRoute(ledges, { x: physics.x, y: physics.y }, cursor, attached, { arriveWithin: FOLLOW_ARRIVAL_PX, speeds: this.routeSpeeds }) : [];
+		const route = ledges.length > 0 ? findRoute(ledges, { x: physics.x, y: physics.y }, cursor, attached, { arriveWithin: FOLLOW_ARRIVAL_PX, speeds: this.routeSpeeds, ...this.fallPhysics }) : [];
 		const next = route[0];
 
 		// With surfaces present, an empty route means the router has nothing left to offer — the
@@ -1038,10 +1038,18 @@ export class BehaviorAI {
 	 * cannot be constants. Computed once in the constructor rather than as a field initialiser,
 	 * which would read `this.pack` before the parameter property assigning it has run. */
 	private readonly routeSpeeds: RouteSpeeds;
+	private readonly fallPhysics: FallPhysics;
 
 	constructor(private pack: MascotPack, private rng: Random) {
 		this.runner = new ActionRunner(pack, rng);
 		this.routeSpeeds = routeSpeedsFor((name) => pack.actions.get(name), ROUTE_ACTIONS, DEFAULT_ROUTE_OPTIONS.speeds);
+		// The same idea as the speeds above, for the same reason: what the router predicts about a
+		// fall has to be what this pack's own `Falling` will actually do.
+		this.fallPhysics = fallPhysicsFor(pack.actions.get("Falling"), {
+			gravity: DEFAULT_ROUTE_OPTIONS.gravity,
+			registanceX: DEFAULT_ROUTE_OPTIONS.registanceX,
+			registanceY: DEFAULT_ROUTE_OPTIONS.registanceY,
+		});
 		this.warnIfIncomplete();
 	}
 

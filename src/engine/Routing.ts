@@ -84,6 +84,9 @@ export interface RouteOptions {
 	 * sublinear — long drops are proportionally *cheaper*, which is exactly why they are worth
 	 * preferring over climbing back down. */
 	gravity: number;
+	/** Per-tick velocity decay per axis — see DEFAULT_ROUTE_OPTIONS. */
+	registanceX: number;
+	registanceY: number;
 	/** Fixed tick overheads: a jump has a windup, and changing surface costs a moment either way.
 	 * Without these the router would happily chain dozens of micro-hops. */
 	jumpOverhead: number;
@@ -174,7 +177,21 @@ export const DEFAULT_ROUTE_OPTIONS: RouteOptions = {
 	// tolerance, so a planned leap missed *by construction* every time and the mascot fell back on
 	// climbing to the ceiling. Reported as "they jump quite nicely, unfortunately it doesn't hit and
 	// then they have to climb to the ceiling and drop from it anyway".
-	gravity: (DEFAULT_ENGINE_CONFIG.gravity * ENGINE_FIXED_TICK_MS * ENGINE_FIXED_TICK_MS) / 1_000_000,
+	// Per tick, and defaulting to what `Fall.java` itself defaults to — because that is what the
+	// engine uses. A pack's own `Falling` action carries Gravity/RegistanceX/RegistanceY attributes
+	// and *always* overrides the engine config (see nativeAdapter's withEffectiveGravity), so these
+	// are only the fallback; BehaviorAI reads the real ones off the pack and passes them in.
+	//
+	// An earlier version of this derived gravity from DEFAULT_ENGINE_CONFIG instead, which is the
+	// one number a real Fall never reads.
+	gravity: 2,
+	// Air resistance, applied to each axis every tick as `v *= 1 - r`. Modelling it is not a
+	// refinement: at 0.05 the horizontal velocity is down to a fifth after thirty ticks, so a hop's
+	// reach converges instead of growing. Ignoring it made the router predict 561px of sideways
+	// travel on a 500px drop where the engine flies 289 — nearly double, which is why a hop planned
+	// to pass through a spot did not, and the order could never register as reached.
+	registanceX: 0.05,
+	registanceY: 0.1,
 	jumpOverhead: 6,
 	chimneyHopUp: 120,
 	// Wide enough that a mascot could plausibly be *in* the corridor it is kicking across. It was 3
@@ -270,15 +287,9 @@ export interface LeapThrough {
 	ticks: number;
 }
 
-/** Where a hop launched from `(x0, y0)` in `dir` has got to after `t` ticks. Rises first, because
- * the launch is upward, which is the whole reason it reaches sideways at all. */
-function arcAt(x0: number, y0: number, dir: number, t: number, opts: RouteOptions): Vec2 {
-	return { x: x0 + dir * opts.hop.vx * t, y: y0 - opts.hop.vy * t + (opts.gravity * t * t) / 2 };
-}
-
 /** Whether an arc runs into anything before its time is up: a wall crossed, or a floor landed on.
  * Sampled per tick, which is the resolution the engine itself flies it at. */
-function arcObstructed(ledges: Ledge[], from: Vec2, dir: number, ticks: number, launchedFrom: Ledge, opts: RouteOptions): boolean {
+function arcObstructed(ledges: Ledge[], from: Vec2, dir: number, ticks: number, launchedFrom: Ledge, opts: RouteOptions, arrivingOn?: Ledge): boolean {
 	const steps = Math.max(1, Math.ceil(ticks));
 	let prev = from;
 	for (let i = 1; i <= steps; i++) {
@@ -286,7 +297,10 @@ function arcObstructed(ledges: Ledge[], from: Vec2, dir: number, ticks: number, 
 		const lo = Math.min(prev.x, at.x);
 		const hi = Math.max(prev.x, at.x);
 		for (const l of ledges) {
-			if (l === launchedFrom) continue;
+			// The surface being left, and the one being aimed at: neither is an obstruction. Without
+			// the second, a hop planned to land on a floor was rejected for running into that very
+			// floor.
+			if (l === launchedFrom || l === arrivingOn) continue;
 			if (l.kind === "wall") {
 				// A wall at the launch x is one being pushed off, not flown into — by position, not
 				// by ledge identity, since adjacent panes put two faces at the very same x.
@@ -347,12 +361,17 @@ export function planLeapThrough(ledges: Ledge[], spot: Vec2, options?: Partial<R
 			const dx = spot.x - ledge.x;
 			if (Math.abs(dx) < 1) continue; // straight below a wall is a drop, not a leap
 			const dir: -1 | 1 = dx < 0 ? -1 : 1;
-			const ticks = Math.abs(dx) / opts.hop.vx;
-			// Solve the launch height from the flight time, which is what makes a wall worth using:
-			// y(t) = y0 - vy*t + g*t^2/2, so y0 = spot.y + vy*t - g*t^2/2.
-			const y0 = spot.y + opts.hop.vy * ticks - (opts.gravity * ticks * ticks) / 2;
+			// Fly the arc until it has covered the sideways distance, then read off how far it fell
+			// getting there — the launch height is whatever puts that drop at the spot.
+			//
+			// Simulated rather than solved, because resistance means the reach converges: past a
+			// certain distance no launch height reaches the spot at all, and a formula in `t` says
+			// otherwise.
+			const reach = hopReach(Math.abs(dx), opts);
+			if (!reach) continue;
+			const y0 = spot.y - reach.drop;
 			if (y0 < ledge.y1 || y0 > ledge.y2) continue; // not a height this wall actually reaches
-			consider({ x: ledge.x, y: y0 }, ledge, dir, ticks);
+			consider({ x: ledge.x, y: y0 }, ledge, dir, reach.ticks);
 			continue;
 		}
 
@@ -363,7 +382,9 @@ export function planLeapThrough(ledges: Ledge[], spot: Vec2, options?: Partial<R
 			const dx = spot.x - offX;
 			const dir: -1 | 1 = end === "x1" ? -1 : 1;
 			if (Math.sign(dx) !== dir) continue; // the spot is back over the floor it is leaving
-			consider({ x: ledge[end], y: ledge.y }, ledge, dir, Math.abs(dx) / opts.hop.vx);
+			const reach = hopReach(Math.abs(dx), opts);
+			if (!reach) continue;
+			consider({ x: ledge[end], y: ledge.y }, ledge, dir, reach.ticks);
 		}
 	}
 	return best;
@@ -605,15 +626,17 @@ function transfersFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts
 			// happens to contain the landing point: a hop cannot pass through the one above on its
 			// way to the one below, and offering that would plan a route through solid surfaces.
 			const dir = end === "x1" ? -1 : 1;
-			let bestHop: { to: FloorLedge; at: Vec2 } | undefined;
+			let bestHop: { to: FloorLedge; at: Vec2; ticks: number } | undefined;
 			for (const other of ledges) {
 				if (other === ledge || other.kind !== "floor") continue;
 				const dy = other.y - ledge.y;
 				if (dy <= 0) continue;
 				if (bestHop && other.y >= bestHop.to.y) continue;
-				const landX = offX + dir * opts.hop.vx * hopFlightTicks(dy, opts);
+				const flight = hopFlight(dy, dir, opts);
+				if (!flight) continue;
+				const landX = offX + flight.across;
 				if (landX < other.x1 - JOIN_EPS || landX > other.x2 + JOIN_EPS) continue;
-				bestHop = { to: other, at: { x: clamp(landX, other.x1, other.x2), y: other.y } };
+				bestHop = { to: other, at: { x: clamp(landX, other.x1, other.x2), y: other.y }, ticks: flight.ticks };
 			}
 			// ...and only if the arc can actually be flown. Solving where a hop *lands* says nothing
 			// about what it passes through on the way, and the executor's own fall sweep stops a
@@ -626,7 +649,7 @@ function transfersFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts
 			//
 			// Rejecting the hop is the whole fix: a plain `drop` off the same edge is already
 			// offered above, falls straight down, crosses nothing, and gets there.
-			if (bestHop && !hopHitsWall(ledges, offX, ledge.y, dir, bestHop.to.y - ledge.y, opts)) {
+			if (bestHop && !arcObstructed(ledges, { x: offX, y: ledge.y }, dir, bestHop.ticks, ledge, opts, bestHop.to)) {
 				out.push({ from: { x: ledge[end], y: ledge.y }, to: bestHop.to, at: bestHop.at, via: "hop" });
 			}
 		}
@@ -679,59 +702,75 @@ export function edgeStepOffX(ledges: Ledge[], floor: FloorLedge, end: "x1" | "x2
  * seconds and one that takes minutes.
  */
 /**
- * How long a hop stays in the air before falling `dy`, in ticks.
+ * One tick of a fall, exactly as the engine applies it: resistance first, then gravity, then the
+ * step. Kept in one place and used by every prediction below, because the router and the physics
+ * disagreeing about where a mascot will end up is the single fault that has produced the most bugs
+ * in this file — a hop that dies two pixels in, a leap that lands 48px short, a pass-through that
+ * does not pass through.
  *
- * The launch is upward, so the mascot rises before it descends and the flight is longer than a
- * plain fall of the same height — solving `dy = -u*t + g*t^2/2` for the positive root rather than
- * `sqrt(2*dy/g)`. That extra time is the whole reason a hop reaches sideways at all, so costing it
- * as a drop would both under-price the move and put the landing in the wrong place.
+ * Closed-form solutions were what it used before, and they cannot express the resistance: with a
+ * per-tick decay the horizontal reach converges rather than growing, so no formula in `t` matches.
  */
-function hopFlightTicks(dy: number, opts: RouteOptions): number {
-	const u = opts.hop.vy;
-	return (u + Math.sqrt(u * u + 2 * opts.gravity * Math.max(0, dy))) / opts.gravity;
+export interface FallState {
+	x: number;
+	y: number;
+	vx: number;
+	vy: number;
+}
+
+export function stepFall(state: FallState, opts: RouteOptions): FallState {
+	const vx = state.vx * (1 - opts.registanceX);
+	const vy = state.vy * (1 - opts.registanceY) + opts.gravity;
+	return { x: state.x + vx, y: state.y + vy, vx, vy };
+}
+
+/** How long an unassisted fall of `dy` takes, in ticks. Capped: with resistance a fall approaches a
+ * terminal speed, so an unreachable depth would otherwise loop forever. */
+const MAX_FLIGHT_TICKS = 600;
+
+/**
+ * How long a hop stays in the air before falling `dy`, in ticks, and how far sideways it gets.
+ *
+ * Simulated rather than solved. The launch is upward, so the arc rises before it falls and the
+ * flight is longer than a plain drop of the same height — but resistance is what actually decides
+ * where it comes down, and that has no closed form.
+ */
+function hopFlight(dy: number, dir: number, opts: RouteOptions): { ticks: number; across: number } | undefined {
+	let at: FallState = { x: 0, y: 0, vx: dir * opts.hop.vx, vy: -opts.hop.vy };
+	for (let t = 1; t <= MAX_FLIGHT_TICKS; t++) {
+		at = stepFall(at, opts);
+		if (at.y >= dy) return { ticks: t, across: at.x };
+	}
+	return undefined;
 }
 
 /**
- * Whether a hop launched from `(fromX, fromY)` would fly into a wall before completing its arc.
+ * How long a hop takes to travel `across` pixels sideways, and how far it has fallen by then.
  *
- * The router and the mascot carrying out its plans have to agree about what a move does, and until
- * this existed they disagreed about hops entirely: the router solved the landing point analytically
- * while the engine flies the arc one substep at a time and stops dead at the first wall crossed.
- * A hop planned across a pane divider is the case that matters — the two walls of a divider are
- * only ~8px apart, and the step off a floor's end lands the mascot between them.
- *
- * Sampled per tick rather than solved: the arc crosses each x once, so tick resolution cannot miss
- * a wall it spends a whole tick approaching, and the graph is a handful of panes.
+ * Undefined when it never gets that far: with resistance the horizontal reach converges, so beyond
+ * a certain distance there is no answer rather than a large one.
  */
-function hopHitsWall(ledges: Ledge[], fromX: number, fromY: number, dir: number, dy: number, opts: RouteOptions): boolean {
-	const flight = hopFlightTicks(dy, opts);
-	const steps = Math.max(1, Math.ceil(flight));
-	let prevX = fromX;
-	for (let i = 1; i <= steps; i++) {
-		const t = (flight * i) / steps;
-		const x = fromX + dir * opts.hop.vx * t;
-		// The launch is upward, so the arc rises before it falls — the same solution hopFlightTicks
-		// inverts. Getting this wrong would test the wrong heights and wave blocked hops through.
-		const y = fromY - opts.hop.vy * t + (opts.gravity * t * t) / 2;
-		const lo = Math.min(prevX, x);
-		const hi = Math.max(prevX, x);
-		for (const l of ledges) {
-			if (l.kind !== "wall") continue;
-			// Strictly crossed, matching the executor's own test: a wall exactly at the launch x is
-			// one the mascot is standing against, not one it flies into.
-			if (l.x <= lo || l.x >= hi) continue;
-			if (y >= l.y1 && y <= l.y2) return true;
-		}
-		prevX = x;
+function hopReach(across: number, opts: RouteOptions): { ticks: number; drop: number } | undefined {
+	let at: FallState = { x: 0, y: 0, vx: opts.hop.vx, vy: -opts.hop.vy };
+	for (let t = 1; t <= MAX_FLIGHT_TICKS; t++) {
+		at = stepFall(at, opts);
+		if (at.x >= across) return { ticks: t, drop: at.y };
 	}
-	return false;
+	return undefined;
+}
+
+/** Where a hop launched from `(x0, y0)` has got to after `t` ticks. */
+function arcAt(x0: number, y0: number, dir: number, t: number, opts: RouteOptions): Vec2 {
+	let at: FallState = { x: x0, y: y0, vx: dir * opts.hop.vx, vy: -opts.hop.vy };
+	for (let i = 0; i < t; i++) at = stepFall(at, opts);
+	return { x: at.x, y: at.y };
 }
 
 /**
  * Whether a straight-line jump would pass through a wall or land on a floor before it arrives.
  *
- * Sampled, like the arc check above, and for the same reason: the engine stops a mascot at
- * whatever it runs into, so a plan that ignores that is a plan it cannot carry out.
+ * Sampled, like the arc check above, and for the same reason: the engine stops a mascot at whatever
+ * it runs into, so a plan that ignores that is a plan it cannot carry out.
  */
 function jumpBlocked(ledges: Ledge[], from: Vec2, to: Vec2, leaving: Ledge, arriving: Ledge): boolean {
 	const steps = Math.max(1, Math.ceil(distance(from, to) / 8));
@@ -773,7 +812,7 @@ function stepCost(via: RouteVia, from: Vec2, to: Vec2, opts: RouteOptions, along
 			// Just the flight, plus the same windup a jump pays. The sideways distance is free: it is
 			// covered while falling, which is precisely what makes a hop worth planning over a drop
 			// followed by a walk.
-			return hopFlightTicks(Math.abs(to.y - from.y), opts) + opts.jumpOverhead;
+			return (hopFlight(Math.abs(to.y - from.y), Math.sign(to.x - from.x) || 1, opts)?.ticks ?? fallDurationTicks(Math.abs(to.y - from.y), opts)) + opts.jumpOverhead;
 		case "chimney": {
 			// One edge, many kicks — so the cost is the whole ascent, or the router would price a
 			// corridor climb as a single hop and prefer it to things that are genuinely nearer.
@@ -1018,10 +1057,22 @@ export function routeDurationTicks(from: Vec2, steps: RouteStep[], options?: Par
 	return total;
 }
 
-/** Time for an unassisted fall of `dy` pixels, in ticks. */
+/**
+ * Time for an unassisted fall of `dy` pixels, in ticks.
+ *
+ * Stepped, like everything else that predicts a fall. `sqrt(2dy/g)` is right only without
+ * resistance; with it a fall reaches a terminal speed (gravity/registanceY, so 20px/tick for the
+ * bundled pack) and a long drop takes far longer than the formula says.
+ */
 export function fallDurationTicks(dy: number, options?: Partial<RouteOptions>): number {
 	const opts = { ...DEFAULT_ROUTE_OPTIONS, ...options };
-	return Math.sqrt((2 * Math.max(0, dy)) / opts.gravity);
+	const target = Math.max(0, dy);
+	let at: FallState = { x: 0, y: 0, vx: 0, vy: 0 };
+	for (let t = 1; t <= MAX_FLIGHT_TICKS; t++) {
+		at = stepFall(at, opts);
+		if (at.y >= target) return t;
+	}
+	return MAX_FLIGHT_TICKS;
 }
 
 export interface DropThrough {

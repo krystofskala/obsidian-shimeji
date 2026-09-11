@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planLeapThrough, planDropThrough, DEFAULT_ROUTE_OPTIONS } from "../src/engine/Routing";
+import { planLeapThrough, planDropThrough, stepFall, DEFAULT_ROUTE_OPTIONS, type FallState } from "../src/engine/Routing";
 import type { Ledge } from "../src/engine/types";
 
 /**
@@ -37,10 +37,11 @@ describe("leaping through a point", () => {
 		expect(leap.from.x).toBe(900); // the pane's wall, not the window ceiling
 		expect(leap.dir).toBe(1); // away from the wall, toward the spot
 
-		// Fly the arc and check it really arrives, using the same numbers the executor launches with.
-		const { hop, gravity } = DEFAULT_ROUTE_OPTIONS;
-		const t = leap.ticks;
-		const at = { x: leap.from.x + leap.dir * hop.vx * t, y: leap.from.y - hop.vy * t + (gravity * t * t) / 2 };
+		// Fly the arc with the engine's own step — not a formula of this test's own, which is exactly
+		// the mistake that let the router and the physics drift apart in the first place.
+		const opts = DEFAULT_ROUTE_OPTIONS;
+		let at: FallState = { x: leap.from.x, y: leap.from.y, vx: leap.dir * opts.hop.vx, vy: -opts.hop.vy };
+		for (let i = 0; i < leap.ticks; i++) at = stepFall(at, opts);
 		expect(Math.hypot(at.x - spot.x, at.y - spot.y)).toBeLessThanOrEqual(40);
 	});
 
@@ -61,7 +62,17 @@ describe("leaping through a point", () => {
 		// being tested. This one spans only the band the arc from x=900 passes through (y≈939) and
 		// not the height a launch of its own would need (y≈956), so it can obstruct without
 		// substituting.
-		const blocked: Ledge[] = [...WITH_PANE, { kind: "wall", side: "right", x: 950, y1: 930, y2: 945, source: "pane" }];
+		//
+		// Placed by flying the arc rather than by arithmetic done here, so it sits where the leap
+		// actually passes whatever the physics happen to be.
+		const clear = planLeapThrough(WITH_PANE, { x: 1000, y: 900 }, OPTS)!;
+		const opts = DEFAULT_ROUTE_OPTIONS;
+		let at: FallState = { x: clear.from.x, y: clear.from.y, vx: clear.dir * opts.hop.vx, vy: -opts.hop.vy };
+		while (at.x < 950) at = stepFall(at, opts);
+		const blocked: Ledge[] = [
+			...WITH_PANE,
+			{ kind: "wall", side: "right", x: Math.round(at.x), y1: Math.round(at.y) - 8, y2: Math.round(at.y) + 8, source: "pane" },
+		];
 		expect(planLeapThrough(blocked, { x: 1000, y: 900 }, OPTS)).toBeUndefined();
 	});
 
