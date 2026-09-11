@@ -836,6 +836,53 @@ export default class ShimejiPlugin extends Plugin {
 		this.availablePacks = this.basePacks.map((p) =>
 			mergeCustomContent(mergeCustomContent(p, paneWrangling), this.settings.customContent[p.id]),
 		);
+		for (const pack of this.availablePacks) this.reportMissingArt(pack);
+	}
+
+	/** Which packs have already been reported on, so re-deriving availablePacks (every settings
+	 * change does) does not repeat itself. Keyed by what was reported, so a pack that changes still
+	 * gets a fresh line. */
+	private reportedMissingArt = new Set<string>();
+
+	/**
+	 * Names, once per pack, the sprites its poses ask for and the folder does not have.
+	 *
+	 * Checked here rather than at load, and that placement is the whole accuracy of it: what a
+	 * mascot will actually try to draw is only settled once custom content has been merged over the
+	 * pack. Several of the user's own characters keep a stock `actions.xml` referencing shime1-46
+	 * that they do not ship, while every animation they really use was authored in the editor and
+	 * replaces those actions outright — judging from the raw XML would have accused six working
+	 * packs of being broken.
+	 *
+	 * Worth reporting at all because the alternative is what a live report actually looked like: a
+	 * pack whose sprites had not been extracted produced 126 bare ERR_FILE_NOT_FOUND in the console
+	 * and no explanation, and an incomplete download was indistinguishable from a plugin bug.
+	 */
+	private reportMissingArt(pack: MascotPack): void {
+		const available = pack.imageFiles;
+		if (!available || available.size === 0) return; // nothing listed: cannot tell, so say nothing
+
+		const missing = new Set<string>();
+		for (const action of pack.actions.values()) {
+			for (const variant of action.animations) {
+				for (const pose of variant.poses) {
+					const clean = pose.image.replace(/^[/\\]+/, "");
+					// Only files directly in the image folder can be judged from one listing; a
+					// reference into a subfolder is left alone rather than reported on no evidence.
+					if (!clean.includes("/") && !available.has(clean.toLowerCase())) missing.add(clean);
+				}
+			}
+		}
+
+		const signature = `${pack.id}:${missing.size}`;
+		if (missing.size === 0 || this.reportedMissingArt.has(signature)) return;
+		this.reportedMissingArt.add(signature);
+		const names = [...missing];
+		console.warn(
+			`[obsidian-shimeji] pack "${pack.name}": ${names.length} image(s) used by its animations are not in "${pack.imgDir ?? "its image folder"}". ` +
+				`Those poses will not draw — usually an incomplete download, or an archive that did not fully extract. ` +
+				`Missing: ${names.slice(0, 12).join(", ")}${names.length > 12 ? `, and ${names.length - 12} more` : ""}`,
+		);
 	}
 
 	/** Re-derives availablePacks from the current custom content and rebinds every live

@@ -151,3 +151,43 @@ describe("a sound whose reference does not match its filename exactly", () => {
 		expect(packs[0].resolveSound!("/rookieshout.wav")).toBeUndefined();
 	});
 });
+
+describe("a pack whose sprites were never extracted", () => {
+	const ACTIONS_MANY = `<Mascot><ActionList><Action Name="Stand" Type="Animate"><Animation>
+	  <Pose Image="/shime1.png" ImageAnchor="64,128" Duration="4"/>
+	  <Pose Image="/shime2.png" ImageAnchor="64,128" Duration="4"/>
+	  <Pose Image="/dash1.png" ImageAnchor="64,128" Duration="4"/>
+	</Animation></Action></ActionList></Mascot>`;
+
+	function app(paths: string[]) {
+		const base = fakeApp(paths) as unknown as { vault: { adapter: { read: (p: string) => Promise<string> } } };
+		const inner = base.vault.adapter.read;
+		base.vault.adapter.read = async (p: string) => (p.endsWith("actions.xml") ? ACTIONS_MANY : inner(p));
+		return base as never;
+	}
+
+	it("hands the caller the art it does have, rather than judging at load", async () => {
+		// Deliberately not a warning from the loader: which images a mascot actually draws is only
+		// settled once custom content has been merged over the pack, and several of the user's own
+		// characters keep a stock actions.xml that their authored animations replace outright.
+		// Judging here would have accused six working packs of being broken.
+		const packs = await loadPacksFromFolder(
+			app(["Pack/conf/actions.xml", "Pack/conf/behaviors.xml", "Pack/img/Umbreon/dash1.png"]),
+			"Pack",
+		);
+		expect([...packs[0].imageFiles!]).toEqual(["dash1.png"]);
+	});
+
+	it("leaves the set empty when the folder cannot be listed, meaning \"cannot tell\"", async () => {
+		const broken = app(["Pack/conf/actions.xml", "Pack/conf/behaviors.xml", "Pack/img/Umbreon/dash1.png"]) as unknown as {
+			vault: { adapter: { list: (p: string) => Promise<unknown> } };
+		};
+		const inner = broken.vault.adapter.list;
+		broken.vault.adapter.list = async (p: string) => {
+			if (p === "Pack/img/Umbreon") throw new Error("nope");
+			return inner(p);
+		};
+		const packs = await loadPacksFromFolder(broken as never, "Pack");
+		expect(packs[0].imageFiles!.size).toBe(0);
+	});
+});

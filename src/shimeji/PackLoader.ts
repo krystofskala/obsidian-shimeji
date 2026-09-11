@@ -154,6 +154,20 @@ async function tryLoadCharacter(app: App, name: string, imgDir: string, confDir:
 		);
 	}
 
+	// One listing, not one existence check per image: a big pack references well over a hundred
+	// sprites and there can be dozens of packs, so probing each would be thousands of adapter calls
+	// at startup. Handed to the caller rather than judged here — which images a mascot will actually
+	// try to draw is only known once custom content has been merged over the pack, and several of
+	// the user's own packs keep a stock actions.xml that their custom animations entirely replace.
+	// See main.ts's refreshAvailablePacks for where this is read.
+	const imageFiles = new Set<string>();
+	try {
+		const listed = await app.vault.adapter.list(imgDir);
+		for (const path of listed.files) imageFiles.add(path.slice(path.lastIndexOf("/") + 1).toLowerCase());
+	} catch {
+		// Unreadable directory: leave the set empty, which the consumer reads as "cannot tell".
+	}
+
 	return {
 		id: name,
 		name,
@@ -174,12 +188,26 @@ async function tryLoadCharacter(app: App, name: string, imgDir: string, confDir:
 		},
 		resolveSound: (file: string): string | undefined => soundSrcByFile.get(file),
 		imgDir,
+		imageFiles,
 	};
 }
 
 /** Every distinct `Sound="..."` in an actions.xml, so the loader knows which files to look for
  * without walking the parsed action tree (which the caller doesn't have yet at this point, and
  * which would also miss sounds on actions that failed to parse). */
+/**
+ * Every distinct `Image="..."` in an actions.xml, for the same reason collectPoseSounds exists —
+ * so a pack can be told what it is missing before anything tries to draw it.
+ */
+function collectPoseImages(actionsXml: string): Set<string> {
+	const found = new Set<string>();
+	for (const match of actionsXml.matchAll(/\bImage\s*=\s*"([^"]+)"/g)) {
+		const file = match[1].trim();
+		if (file !== "") found.add(file);
+	}
+	return found;
+}
+
 function collectPoseSounds(actionsXml: string): Set<string> {
 	const found = new Set<string>();
 	for (const match of actionsXml.matchAll(/\bSound\s*=\s*"([^"]+)"/g)) {

@@ -121,4 +121,8 @@ export interface MascotPack {
 	 * Mascot.artScale. Absent means the pack is already drawn at that size, which every classic
 	 * pack is. */
 	artScale?: number;
+	/** Lowercased basenames of the image files actually present in `imgDir`, captured in one
+	 * listing at load. Lets a caller tell which poses have no art without probing every file.
+	 * Empty or absent means "not known" — never "the pack is empty". */
+	imageFiles?: Set<string>;
 }
