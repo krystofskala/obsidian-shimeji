@@ -73,6 +73,25 @@ const FOLLOW_REAIM_PX = 64;
  * the mascot stands *on* surfaces, and a divider placed at the requested y puts its feet there. */
 const SPOT_ARRIVAL_PX = 40;
 
+/**
+ * How many extra engine ticks a plan may spend for each pixel it gets nearer the spot.
+ *
+ * Reaching the exact point is not free, and until this existed nothing ever asked what it cost. A
+ * spot cannot always be stood on, so an order that cannot be walked to considered exactly two
+ * answers — fall through it, or rebuild the layout — and never the third: get as close as the
+ * floor allows and stop there.
+ *
+ * Measured against a real layout, the difference is not subtle. A spot 62px above the floor is a
+ * 13-tick walk away; hanging from the ceiling to fall through it costs 2809. That is 45 ticks per
+ * pixel gained, or nearly two minutes of climbing to improve on standing underneath it. A spot
+ * properly out in the middle of the editor is 429px from anywhere a mascot can stand and costs
+ * 3.5 ticks per pixel to reach — worth doing, and the only way to get there at all.
+ *
+ * Eight sits well inside that gap. Reported as mascots always climbing to the ceiling and dropping,
+ * "even when I put the point near the floor where you could just walk to it".
+ */
+const MAX_TICKS_PER_PIXEL_CLOSER = 8;
+
 /** How many times a single order may reshape the layout. Each attempt splits a real pane, so a spot
  * that can never be reached (inside chrome, or in a pane too small to split usefully) must not turn
  * into an endless run of new panes. */
@@ -501,7 +520,9 @@ export class BehaviorAI {
 			// future change ever let it choose "drop" again on the way back down, an unbounded
 			// recursion would take the whole app with it — a mascot cannot be worth a stack overflow.
 			// A second pass costs one tick of delay and nothing else.
-			const chosen = reentered ? "neither" : this.chooseSpotPlan(env, ledges, here, spot, routeOpts);
+			const chosen = reentered
+				? "neither"
+				: this.chooseSpotPlan(env, ledges, here, spot, routeOpts, { ticks: routeDurationTicks(here, route, routeOpts), shortfall });
 			if (chosen === "drop") return this.driveSpotOrder(env, ledges, true);
 			if (chosen === "surgery") return false; // new geometry arrives next tick
 		}
@@ -509,9 +530,11 @@ export class BehaviorAI {
 		const next = route[0];
 		if (next) return this.startRouteAction(env, ledges, next.via, next.x, next.y, route.length);
 
-		// Standing at the closest the layout can be persuaded to get. Give the order up rather than
-		// holding the mascot hostage to a spot it will never reach.
-		debugLog("spot order abandoned (unreachable)", spot);
+		// Standing at the closest worth getting to — either the layout genuinely offers nothing
+		// nearer, or reaching the exact point cost more than it was worth (see
+		// MAX_TICKS_PER_PIXEL_CLOSER). Either way the order is done: holding the mascot hostage to
+		// the last few pixels is how a spot near the floor turned into two minutes of climbing.
+		debugLog("spot order done (nothing nearer worth doing)", spot);
 		this.orderedSpot = undefined;
 		return false;
 	}
@@ -529,7 +552,16 @@ export class BehaviorAI {
 	 * The surgery estimate is honest rather than notional: it routes against the graph *as it would be*
 	 * with a floor at the spot, which is exactly what splitting the pane produces.
 	 */
-	private chooseSpotPlan(env: PushEnv, ledges: Ledge[], here: Vec2, spot: Vec2, routeOpts: Partial<RouteOptions>): "drop" | "surgery" | "neither" {
+	private chooseSpotPlan(
+		env: PushEnv,
+		ledges: Ledge[],
+		here: Vec2,
+		spot: Vec2,
+		routeOpts: Partial<RouteOptions>,
+		/** What simply going as near as the layout allows costs, and how far short it leaves the
+		 * mascot — the option both plans below have to beat. */
+		baseline: { ticks: number; shortfall: number },
+	): "drop" | "surgery" | "neither" {
 		const attached = env.mascot.physics.currentFloor ?? env.mascot.physics.currentWall ?? env.mascot.physics.currentCeiling;
 
 		let dropTicks = Infinity;
@@ -592,7 +624,23 @@ export class BehaviorAI {
 			}
 		}
 
-		debugLog("spot order: comparing plans", { dropTicks: Math.round(dropTicks), surgeryTicks: Math.round(surgeryTicks) });
+		// Both plans reach the spot, so each closes the whole shortfall; what differs is the price.
+		// A plan that costs less than simply stopping short is taken outright — the comparison only
+		// bites when reaching the point is the more expensive answer, which is exactly when "is it
+		// worth it" is a real question.
+		const worthIt = (ticks: number): boolean => {
+			if (!Number.isFinite(ticks)) return false;
+			const extra = ticks - baseline.ticks;
+			return extra <= 0 || extra / Math.max(1, baseline.shortfall) <= MAX_TICKS_PER_PIXEL_CLOSER;
+		};
+		if (!worthIt(dropTicks)) dropTicks = Infinity;
+		if (!worthIt(surgeryTicks)) surgeryTicks = Infinity;
+
+		debugLog("spot order: comparing plans", {
+			dropTicks: Math.round(dropTicks),
+			surgeryTicks: Math.round(surgeryTicks),
+			goAsNearAsPossible: { ticks: Math.round(baseline.ticks), leaves: Math.round(baseline.shortfall) },
+		});
 
 		if (dropTicks <= surgeryTicks && Number.isFinite(dropTicks) && drop) {
 			this.spotPhase = { kind: "dropFrom", from: drop.from };

@@ -49,8 +49,8 @@ const PANES: Rect[] = [
  * finishing at all, so this only has to separate "slow" from "stuck". */
 const MAX_TICKS = 12000;
 
-function runOrder(start: { x: number; y: number }, target: { x: number; y: number }) {
-	const ledges = computeLedgesFromRects(VIEWPORT, PANES.map((rect) => ({ rect, source: "pane" as const, paneRef: rect })));
+function runOrder(start: { x: number; y: number }, target: { x: number; y: number }, panes: Rect[] = PANES) {
+	const ledges = computeLedgesFromRects(VIEWPORT, panes.map((rect) => ({ rect, source: "pane" as const, paneRef: rect })));
 	const floor = ledges.find((l): l is Extract<Ledge, { kind: "floor" }> => l.kind === "floor" && Math.abs(l.y - start.y) < 1 && start.x >= l.x1 && start.x <= l.x2);
 	expect(floor, `nothing to stand on at (${start.x},${start.y}) — fix the test's own setup`).toBeDefined();
 	const physics = {
@@ -140,5 +140,54 @@ describe("spot orders across a real card-themed layout", () => {
 		// future regression that reintroduces it is named for what it is.
 		const r = runOrder({ x: 1436, y: 80 }, { x: 1436, y: 1392 });
 		expect(r.at.y, "mascot never left the floor it started on").toBeGreaterThan(80);
+	});
+});
+
+/**
+ * What an order *costs*, not just whether it finishes.
+ *
+ * Every order here always completed — by climbing to the ceiling and falling through the point,
+ * which is the only answer that reaches an exact spot and, until the cost was weighed, the only one
+ * ever considered. Reported as mascots "always climbing right to the ceiling and then dropping onto
+ * the point, which isn't fun, especially when the point is near the floor where you could just walk
+ * to it".
+ *
+ * On this layout a spot 62px above the floor is a 13-tick walk away and 2809 ticks of climbing to
+ * land on exactly — 45 ticks for each pixel gained, nearly two minutes to improve on standing
+ * underneath it. A spot out in the middle of the editor costs 3.5 ticks per pixel, and is the only
+ * way to get there at all. Both of those stay true here.
+ */
+describe("what an order is willing to pay", () => {
+	const FLOOR_Y = 1392;
+
+	it("walks to a spot just above the floor instead of touring the window", () => {
+		const r = runOrder({ x: 700, y: FLOOR_Y }, { x: 900, y: FLOOR_Y - 62 });
+		expect(r.outstanding).toBe(false);
+		// Ends under the spot, not up at the ceiling, and gets there in seconds rather than minutes.
+		expect(Math.abs(r.at.x - 900)).toBeLessThan(80);
+		expect(r.at.y).toBeGreaterThan(FLOOR_Y - 200);
+		expect(r.ticks).toBeLessThan(600);
+	});
+
+	it("still climbs and drops for a spot genuinely out in mid-air", () => {
+		// The rule must not turn into "never bother": where falling through is the only way there,
+		// it is still worth minutes of climbing.
+		//
+		// Bare window, no panes, because on the card layout above there is no drop to be had at all
+		// — the middle pane's own top edge sits between the ceiling and any spot inside it, and
+		// planDropThrough correctly refuses a fall that would land on something first. Going as near
+		// as possible is the right answer there, which makes it the wrong place to test this.
+		const r = runOrder({ x: 700, y: FLOOR_Y }, { x: 700, y: 600 }, []);
+		expect(r.outstanding).toBe(false);
+		expect(r.miss).toBeLessThan(64);
+		expect(r.at.y).toBeLessThan(FLOOR_Y - 200);
+	});
+
+	it("does not climb away from a spot it is already nearly standing at", () => {
+		// The shape of the complaint at its sharpest: a point a mascot's height off the floor, where
+		// the old plan sent it up 1300px to fall back down through it.
+		const before = runOrder({ x: 400, y: FLOOR_Y }, { x: 1000, y: FLOOR_Y - 100 });
+		expect(before.outstanding).toBe(false);
+		expect(before.at.y).toBeGreaterThan(FLOOR_Y - 200);
 	});
 });
