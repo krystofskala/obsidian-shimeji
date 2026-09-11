@@ -509,3 +509,51 @@ describe("Mascot upside-down feet drag", () => {
 		expect(mascot.isDraggedUpsideDown).toBe(true);
 	});
 });
+
+/**
+ * A mascot is built wearing the placeholder — the little white figure that stands in when no pack
+ * is loaded — and only puts its pack's art on when the first pose is shown, which does not happen
+ * until the driver's first tick. Invisible for an ordinary spawn, which starts off-screen and falls
+ * in; not invisible for a Transform, which hatches in place and in view. Reported as the Umbreon
+ * "looking like the default character for a second" after the egg broke.
+ */
+describe("a mascot that has a pack but has not drawn it yet", () => {
+	function fresh() {
+		const mascot = new Mascot(makeDeps(), 100, 200);
+		mascot.attachDriver({ tick() {} });
+		return mascot;
+	}
+
+	it("is withheld rather than shown as the placeholder", () => {
+		const mascot = fresh();
+		mascot.render();
+		expect(mascot.el.style.visibility).toBe("hidden");
+	});
+
+	it("appears as soon as it has a pose to draw", () => {
+		const mascot = fresh();
+		mascot.setVisualImage("app://umbreon/shime1.png", { x: 64, y: 128 });
+		// jsdom decodes nothing, so fire the load the browser would — the same handler that ends
+		// the wait in production.
+		mascot.el.querySelector("img")!.dispatchEvent(new Event("load"));
+		mascot.render();
+		expect(mascot.el.style.visibility).toBe("");
+	});
+
+	it("gives up waiting rather than staying invisible", () => {
+		// A pack that never shows a pose, or an image that never loads, must still turn up — wearing
+		// the placeholder, exactly as it did before.
+		const mascot = fresh();
+		for (let i = 0; i < 20; i++) mascot.simulate(0.04, []);
+		mascot.render();
+		expect(mascot.el.style.visibility).toBe("");
+	});
+
+	it("leaves display alone, so presence and dressing can disagree", () => {
+		const mascot = fresh();
+		mascot.setHidden(true);
+		mascot.render();
+		expect(mascot.el.style.display).toBe("none");
+		expect(mascot.el.style.visibility).toBe("hidden");
+	});
+});

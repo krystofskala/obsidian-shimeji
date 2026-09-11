@@ -63,6 +63,14 @@ const FEET_GRAB_FRACTION = 1 / 3;
  * moving, while still forgiving the sub-pixel jitter a held pose can produce. */
 const STILL_EPS_PX = 2;
 
+/**
+ * How long a freshly dressed mascot may stay invisible while its first sprite loads.
+ *
+ * Generous next to a local vault image and short enough that a pack which never draws anything
+ * still turns up promptly, wearing the placeholder, exactly as it did before.
+ */
+const ART_GRACE_MS = 250;
+
 /** Touch/pen has no right-click, so holding still opens the context menu instead — the same
  * long-press-for-options gesture Obsidian's own mobile UI already uses elsewhere (e.g. the
  * file explorer). Gated to non-mouse pointers only; desktop's existing right-click is
@@ -355,6 +363,7 @@ export class Mascot {
 		this.img.draggable = false;
 		this.img.addEventListener("load", () => {
 			if (!this.usingImage) return;
+			this.awaitingArtMs = -1;
 			this.width = this.img.naturalWidth || this.width;
 			this.height = this.img.naturalHeight || this.height;
 			this.applyBoxSize();
@@ -369,7 +378,26 @@ export class Mascot {
 	attachDriver(driver: MascotDriver): void {
 		this.detachDriver();
 		this.driver = driver;
+		// A mascot is built wearing the placeholder — the little white figure that stands in when no
+		// pack is loaded — and only puts its pack's art on when the first pose is shown, which does
+		// not happen until the driver's first tick. So there is always a frame in between.
+		//
+		// Invisible for every ordinary spawn, because those start off-screen and fall in. A
+		// transform does not: the Eevee egg hatches in place and in view, and the Umbreon that
+		// replaces it was visibly the placeholder for a moment first. Reported exactly that way.
+		//
+		// Withheld rather than substituted: there is nothing better to draw yet, and one frame of
+		// nothing reads as instant, where one frame of the wrong character reads as a glitch.
+		this.awaitingArtMs = 0;
 	}
+
+	/**
+	 * How long this mascot has been waiting for its pack's art, in ms, or -1 once it is dressed —
+	 * see attachDriver. Ends when the first pose's image has actually *loaded*, not merely been
+	 * assigned, since an unloaded <img> draws nothing and revealing one swaps a placeholder flash
+	 * for a blank one.
+	 */
+	private awaitingArtMs = -1;
 
 	detachDriver(): void {
 		this.driver?.onDetach?.(this);
@@ -787,6 +815,13 @@ export class Mascot {
 	 * `render()` separately (Stage does this once per real frame, possibly after several
 	 * simulate() calls if the display stalled). */
 	simulate(dtSeconds: number, ledges: Ledge[], nearbyMascotX?: number): void {
+		if (this.awaitingArtMs >= 0) {
+			this.awaitingArtMs += dtSeconds * 1000;
+			// Bounded, because staying invisible would be far worse than the flicker this prevents:
+			// a pack that never shows a pose, or an image that never loads, gets the placeholder
+			// after this and looks exactly as it did before.
+			if (this.awaitingArtMs > ART_GRACE_MS) this.awaitingArtMs = -1;
+		}
 		this.stateElapsedMs += dtSeconds * 1000;
 		// Measured against the position this stillness period started from, not against the previous
 		// tick: a mascot inching along at a fraction of a pixel per tick would otherwise reset the
@@ -941,6 +976,9 @@ export class Mascot {
 
 	setVisualImage(src: string, anchor: Vec2): void {
 		this.usingImage = true;
+		// Already decoded (the usual case — a pack's poses cycle through the same handful of files)
+		// so there is nothing to wait for. A first-time load is finished by the load handler below.
+		if (this.img.complete && this.img.naturalWidth > 0) this.awaitingArtMs = -1;
 		this.svg.style.display = "none";
 		this.img.style.display = "";
 		this.imageAnchor = anchor;
@@ -982,6 +1020,9 @@ export class Mascot {
 		// with scale: shrinking a mascot sank its feet below the floor line, enlarging it lifted
 		// them above it — reported live, since the drift is proportional to half the sprite's own
 		// size and easily tens of pixels at the settings screen's 0.5-2x range.
+		// `visibility`, not `display`: setHidden owns `display` for off-screen/room presence, and the
+		// two must be able to say different things without overwriting each other.
+		this.el.style.visibility = this.awaitingArtMs >= 0 ? "hidden" : "";
 		this.el.style.transformOrigin = `${anchor.x}px ${anchor.y}px`;
 		this.el.style.transform = `translate3d(${left}px, ${top}px, 0) scale(${this.renderScale})`;
 		this.inner.style.transformOrigin = `${anchor.x}px ${anchor.y}px`;
