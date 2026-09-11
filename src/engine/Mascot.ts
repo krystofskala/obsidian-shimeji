@@ -225,7 +225,28 @@ export class Mascot {
 	physics: MascotPhysics;
 	state: NativeStateName = "fall";
 	stateElapsedMs = 0;
+	/** The user's own size setting (times the responsive factor). Set from main.ts, and from
+	 * Residency for a mascot that has moved into the room. */
 	scale = 1;
+	/**
+	 * How much this pack's own art has to be shrunk to sit alongside everyone else's.
+	 *
+	 * Shimeji-ee art is authored on 128px frames and every size setting in this plugin is implicitly
+	 * relative to that. A pack drawn at a different size is not "bigger art", it is the same
+	 * character measured in different units — one exported from the Shimeji app comes on 512px
+	 * frames and turned up four times the height of every classic pack beside it.
+	 *
+	 * Kept separate from `scale` rather than folded into it so the two keep meaning different
+	 * things: `scale` is what the user chose, this is a property of the pack. Folding them would
+	 * make the settings slider read differently for different characters, and the next write of
+	 * `scale` from a settings change would throw the correction away.
+	 */
+	artScale = 1;
+
+	/** What the mascot is actually drawn at — the only scale any geometry should use. */
+	get renderScale(): number {
+		return this.scale * this.artScale;
+	}
 	/**
 	 * Whether this character's climb art is *directional* — drawn running one way up the wall, so it
 	 * has to be mirrored to travel the other.
@@ -620,7 +641,7 @@ export class Mascot {
 	hotspotAt(clientX: number, clientY: number): HotspotDef | undefined {
 		if (this.hotspots.length === 0) return undefined;
 		const rect = this.el.getBoundingClientRect();
-		const scale = this.scale || 1;
+		const scale = this.renderScale || 1;
 		const localX = (clientX - rect.left) / scale;
 		const localY = (clientY - rect.top) / scale;
 		const x = this.physics.facing === 1 ? this.width - localX : localX;
@@ -753,7 +774,7 @@ export class Mascot {
 			// the feet the anchor *is* the pinch point, so the offset is zero and the flip in
 			// render() puts the body below the cursor instead of above it.
 			const anchorOffsetY = this.dragUpsideDown ? FEET_DRAG_ANCHOR_OFFSET_Y : DRAG_ANCHOR_OFFSET_Y;
-			tickDragged(this.physics, this.dragTrack, anchorOffsetY * this.scale, this.deps.getViewportSize());
+			tickDragged(this.physics, this.dragTrack, anchorOffsetY * this.renderScale, this.deps.getViewportSize());
 			const nextFoot = tickDragFootX(this.dragFootX, this.dragFootDx, this.dragTrack.x);
 			this.dragFootX = nextFoot.footX;
 			this.dragFootDx = nextFoot.footDx;
@@ -924,7 +945,7 @@ export class Mascot {
 		// them above it — reported live, since the drift is proportional to half the sprite's own
 		// size and easily tens of pixels at the settings screen's 0.5-2x range.
 		this.el.style.transformOrigin = `${anchor.x}px ${anchor.y}px`;
-		this.el.style.transform = `translate3d(${left}px, ${top}px, 0) scale(${this.scale})`;
+		this.el.style.transform = `translate3d(${left}px, ${top}px, 0) scale(${this.renderScale})`;
 		this.inner.style.transformOrigin = `${anchor.x}px ${anchor.y}px`;
 		// facing=1 means "facing/moving right" by convention; real Shimeji-ee artwork is
 		// authored facing left (confirmed by its Walk poses using negative x velocity), so a

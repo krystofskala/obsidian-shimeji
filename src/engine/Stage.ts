@@ -235,7 +235,7 @@ export class Stage {
 		// A confined mascot's world is substituted wholesale rather than filtered: the title-bar
 		// cutoff below is about Obsidian's own chrome, which is not above a room's ceiling.
 		if (mascot.confinement) return mascot.confinement.getLedges();
-		const standingSize = mascot.height * mascot.scale;
+		const standingSize = mascot.height * mascot.renderScale;
 		return withoutWallsInUnusableEdgeStrips(
 			withoutLedgesTooCloseToTop(this.ledges, this.worldTop, standingSize),
 			this.environment.getViewportSize().width,

@@ -295,6 +295,30 @@ function frequencyFor(name: string, file: AppAnimationFile): number {
 	return Math.max(1, Math.round(incoming * 10));
 }
 
+/**
+ * The frame size shimeji-ee art is authored at, and therefore the size every size setting in this
+ * plugin is implicitly relative to.
+ *
+ * Checked against the user's own packs rather than assumed: eee, Umbreon and BlackGabumon are all
+ * 128x128. The app exports are 512x512, so they arrived four times the height of everything beside
+ * them.
+ */
+export const REFERENCE_FRAME_PX = 128;
+
+/**
+ * How much to shrink this pack's art so it stands alongside classic packs.
+ *
+ * Taken from the frame rather than from the character's own outline inside it, which would mean
+ * decoding sprites at load time to find their alpha bounds. The frame is in the manifest for free
+ * and the exporter draws its characters to fill most of it, so the two are close: a 512px frame
+ * whose character is ~410px tall lands at ~102px against a classic pack's 128. Slightly the smaller
+ * of the two, and nowhere near the fourfold difference it replaces.
+ */
+export function artScaleFor(manifest: AppManifest): number {
+	const height = manifest.sprites.size?.[1];
+	return Number.isFinite(height) && height > 0 ? REFERENCE_FRAME_PX / height : 1;
+}
+
 export interface ConvertedPack {
 	actions: Map<string, ActionDef>;
 	behaviors: Map<string, BehaviorDef>;

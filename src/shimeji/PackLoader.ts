@@ -1,7 +1,7 @@
 import { normalizePath, type App } from "obsidian";
 import { parseActionsXml } from "./ActionsParser";
 import { parseBehaviorsXml } from "./BehaviorsParser";
-import { convertAppPack, type AppAnimationFile, type AppManifest } from "./appPack";
+import { artScaleFor, convertAppPack, type AppAnimationFile, type AppManifest } from "./appPack";
 import type { MascotPack } from "./types";
 
 async function existsFile(app: App, path: string): Promise<boolean> {
@@ -79,6 +79,9 @@ async function tryLoadAppCharacter(app: App, name: string, imgDir: string): Prom
 		},
 		resolveSound: () => undefined,
 		imgDir,
+		// These exports are drawn on much larger frames than shimeji-ee art, so without this they
+		// tower over every classic pack on screen.
+		artScale: artScaleFor(manifest),
 	};
 }
 
@@ -210,6 +213,20 @@ export async function loadPacksFromFolder(app: App, root: string): Promise<Masco
 		const exported = await tryLoadAppCharacter(app, name, `${root}/img/${name}`);
 		if (exported) {
 			packs.push(exported);
+			continue;
+		}
+
+		// A whole shimeji-ee installation dropped in as if it were one character — its own `conf/`,
+		// its own `img/` with the real characters inside, often a `lib/` and the jar besides. That
+		// is how these are distributed, so it is how they arrive.
+		//
+		// Left alone it half-loaded and looked broken rather than absent: the wrapper's own `conf/`
+		// is a perfectly good candidate, so one "character" named after the folder loaded with the
+		// right actions.xml and an imgDir one level above the sprites — every `/shime1.png` resolving
+		// to a file that is not there. Recursing instead yields the characters it actually contains.
+		const nested = await app.vault.adapter.list(`${root}/img/${name}/img`).then((l) => l.folders.length > 0).catch(() => false);
+		if (nested) {
+			packs.push(...(await loadPacksFromFolder(app, `${root}/img/${name}`)));
 			continue;
 		}
 		const confDirCandidates = [`${root}/img/${name}/conf`, `${root}/conf/${name}`, `${root}/conf`];

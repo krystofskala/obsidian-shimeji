@@ -117,4 +117,8 @@ export interface MascotPack {
 	 * packs, used by the custom-content editor to offer an image picker. Optional so synthetic
 	 * packs (tests, mergeCustomContent's output) don't need to fabricate one. */
 	imgDir?: string;
+	/** How much this pack's art has to be shrunk to sit alongside 128px shimeji-ee art — see
+	 * Mascot.artScale. Absent means the pack is already drawn at that size, which every classic
+	 * pack is. */
+	artScale?: number;
 }

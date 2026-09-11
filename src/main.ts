@@ -1761,7 +1761,7 @@ export default class ShimejiPlugin extends Plugin {
 		// this to the ceiling (see withoutLedgesTooCloseToTop), so aiming at the ceiling line set a
 		// target no climb could ever reach — the mascot went as high as the wall allowed and then
 		// sat in the top corner holding an order it could not finish.
-		return { left: 0, right: viewport.width, wallTop: minClimbableY(worldTop, mascot.height * mascot.scale), ceiling: worldTop, bottom: viewport.height };
+		return { left: 0, right: viewport.width, wallTop: minClimbableY(worldTop, mascot.height * mascot.renderScale), ceiling: worldTop, bottom: viewport.height };
 	}
 
 	private startLaps(mascot: Mascot, laps: number): void {
@@ -1873,6 +1873,9 @@ export default class ShimejiPlugin extends Plugin {
 				rng = new Random();
 				this.mascotRng.set(mascot, rng);
 			}
+			// Before the driver, so the very first render is already the right size rather than
+			// popping down a frame later.
+			mascot.artScale = pack.artScale ?? 1;
 			mascot.attachDriver(new PackDriver(pack, this.engineConfig, rng, this.paneActionsGate));
 			mascot.directionalClimbArt = this.settings.directionalClimbArt[pack.id] === true;
 			mascot.setDisabledBehaviors(new Set(this.settings.disabledBehaviors[pack.id] ?? []));

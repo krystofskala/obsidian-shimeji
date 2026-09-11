@@ -215,8 +215,8 @@ export function installDebugApi(
 			const ledges = stage.getLedgesFor(mascot);
 			const viewport = mascot.getViewportSize();
 			const worldTop = stage.getWorldTop();
-			const standing = mascot.height * mascot.scale;
-			const standingSize = mascot.height * mascot.scale;
+			const standing = mascot.height * mascot.renderScale;
+			const standingSize = mascot.height * mascot.renderScale;
 			const bounds = { left: 0, right: viewport.width, wallTop: minClimbableY(worldTop, standingSize), ceiling: worldTop, bottom: viewport.height };
 			const from = { x: mascot.physics.x, y: mascot.physics.y };
 			const direction = from.x - bounds.left <= bounds.right - from.x ? "left" : "right";
@@ -453,7 +453,7 @@ export function installDebugApi(
 			const first = stage.getMascots()[0];
 			const ledges = first ? stage.getLedgesFor(first) : stage.getLedges();
 			if (first) {
-				console.info(`[obsidian-shimeji] mascot#0 at (${Math.round(first.physics.x)}, ${Math.round(first.physics.y)}) on ${describeSurface(first.physics)}, ${Math.round(first.height * first.scale)}px`);
+				console.info(`[obsidian-shimeji] mascot#0 at (${Math.round(first.physics.x)}, ${Math.round(first.physics.y)}) on ${describeSurface(first.physics)}, ${Math.round(first.height * first.renderScale)}px`);
 			}
 			console.info(`[obsidian-shimeji] ${ledges.length} ledges ${first ? "as mascot#0 sees them" : "currently computed (no mascot, unfiltered)"}:`);
 			for (const ledge of ledges) {
