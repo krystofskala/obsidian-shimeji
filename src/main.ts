@@ -29,6 +29,8 @@ import { mergeCustomContent } from "./shimeji/CustomContentBuilder";
 import { newSpecId } from "./shimeji/customContent";
 import { buildPaneWranglingContent } from "./shimeji/paneWrangling";
 import { buildAdventurousnessContent } from "./shimeji/adventurousness";
+import { buildRaceReactionsContent } from "./shimeji/raceReactions";
+import { Race } from "./engine/race";
 import { PackDriver } from "./shimeji/PackDriver";
 import { runMovementSelfTest, startFreePlayRecording, type SelfTestHandle } from "./movementSelfTest";
 import { loadPacksFromFolder } from "./shimeji/PackLoader";
@@ -90,6 +92,14 @@ export default class ShimejiPlugin extends Plugin {
 		(mascot, text) => this.chatBubble.addScriptedLine(mascot, text),
 		this.app,
 	);
+	/**
+	 * Scoring for "everybody to that spot" — see engine/race.ts. It announces through the speech
+	 * bubbles like anything else a mascot says, so it is silent when speech is switched off, but the
+	 * jumping and the sulking still happen: those are behaviours, not remarks.
+	 */
+	readonly race: Race = new Race((mascot, text) => {
+		if (this.settings.speechEnabled) this.speech.say(mascot as Mascot, text);
+	});
 	/** Last parse of the speech file, for the settings screen. Undefined until first read. */
 	speechStats?: SpeechStats;
 	/** The parsed pool, kept so shimejiDebug.speech() can show which behaviours are actually
@@ -842,7 +852,14 @@ export default class ShimejiPlugin extends Plugin {
 		const adventurousness = this.settings.adventurousMovement ? buildAdventurousnessContent() : undefined;
 		this.availablePacks = this.basePacks.map((p) =>
 			mergeCustomContent(
-				mergeCustomContent(mergeCustomContent(p, paneWrangling), adventurousness),
+				mergeCustomContent(
+					// Unconditional, unlike the two above, and with no setting of its own: both of these
+					// are frequency 0, so a mascot that is not in a race is affected by none of it. They
+					// exist only to be started by name when one finishes first or last. Built per pack
+					// because the sad pose is chosen from what that pack actually has.
+					mergeCustomContent(mergeCustomContent(p, paneWrangling), adventurousness),
+					buildRaceReactionsContent(new Set(p.actions.keys())),
+				),
 				this.settings.customContent[p.id],
 			),
 		);
@@ -1256,8 +1273,13 @@ export default class ShimejiPlugin extends Plugin {
 	orderAllMascotsToSpot(point: { x: number; y: number }): void {
 		const mascots = this.stage?.getMascots() ?? [];
 		const ordered = orderEveryoneToSpot(mascots, point, this.residency);
+		// User-requested: with more than one of them setting off at once this was already a race in
+		// everything but name, so it is scored now. A single mascot keeps the plain errand it always
+		// was — see Race.start.
+		const racing = this.race.start(ordered, point);
 		if (ordered.length > 0) {
-			new Notice(`On my way to (${Math.round(point.x)}, ${Math.round(point.y)}) (${ordered.length} mascot${ordered.length === 1 ? "" : "s"})`);
+			const who = `${ordered.length} mascot${ordered.length === 1 ? "" : "s"}`;
+			new Notice(racing ? `Race to (${Math.round(point.x)}, ${Math.round(point.y)})! (${who})` : `On my way to (${Math.round(point.x)}, ${Math.round(point.y)}) (${who})`);
 		}
 	}
 
@@ -1516,15 +1538,20 @@ export default class ShimejiPlugin extends Plugin {
 			view?.refresh();
 			const mascots = this.stage?.getMascots() ?? [];
 			// User-requested: with several mascots ordered to one spot at once, there was no way to
-			// tell which ones actually arrived on purpose versus which just happened to be nearby.
-			// Gated on speechEnabled, unlike SpeechBubbles.say's other caller (the settings "try a
-			// line" preview) — that one is a deliberate one-off test action; this fires during
-			// ordinary use, so it should respect the same toggle every other bubble does.
-			if (this.settings.speechEnabled) {
-				for (const mascot of mascots) {
-					if (mascot.consumeJustReachedSpot()) this.speech.say(mascot, "Reached my target!");
-				}
+			// tell which ones actually arrived on purpose from which just happened to be nearby. Now
+			// that the same gesture is scored (see engine/race.ts), the race gets first refusal and
+			// this is the fallback for a lone errand.
+			//
+			// The flag is read unconditionally, and the speech toggle only decides whether anything is
+			// *said* about it. consumeJustReachedSpot is read-once, so gating the read itself would
+			// mean a race silently never saw its finishers with bubbles switched off — and skipping
+			// the race to say the plain line would be the same bug from the other side.
+			for (const mascot of mascots) {
+				if (!mascot.consumeJustReachedSpot()) continue;
+				if (this.race.finish(mascot)) continue; // the race announced the placing itself
+				if (this.settings.speechEnabled) this.speech.say(mascot, "Reached my target!");
 			}
+			this.race.tick(mascots);
 			for (const mascot of mascots) this.laps.tick(mascot);
 			this.speech.tick(mascots, this.stage?.getWorldTop() ?? 0);
 			this.chatBubble.update(this.residency.residentMascot, view?.paneRect(), view?.layout()?.rect);
