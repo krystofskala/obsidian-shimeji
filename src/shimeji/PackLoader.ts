@@ -1,6 +1,7 @@
 import { normalizePath, type App } from "obsidian";
 import { parseActionsXml } from "./ActionsParser";
 import { parseBehaviorsXml } from "./BehaviorsParser";
+import { convertAppPack, type AppAnimationFile, type AppManifest } from "./appPack";
 import type { MascotPack } from "./types";
 
 async function existsFile(app: App, path: string): Promise<boolean> {
@@ -25,6 +26,60 @@ function soundCandidates(root: string, name: string, imgDir: string, file: strin
 	// means the path that gets *tested* is the path that gets *used*.
 	const clean = file.replace(/^[/\\]+/, "");
 	return [`${imgDir}/sound/${clean}`, `${root}/sound/${name}/${clean}`, `${root}/sound/${clean}`].map((p) => normalizePath(p));
+}
+
+/**
+ * Loads a character exported by the Shimeji phone/web app — `manifest.json` + `animation.json` +
+ * `sprites/` — converting it to ordinary actions and behaviors. See appPack.ts for the mapping.
+ *
+ * Tried before any `conf/` candidate, and that order is the fix rather than an optimisation: such a
+ * folder has no conf of its own, so it used to fall through to the *bundled* pack's conf and load
+ * with somebody else's actions.xml pointing at `shimeN.png` files it does not have. It appeared to
+ * load and then logged nothing but missing images.
+ */
+async function tryLoadAppCharacter(app: App, name: string, imgDir: string): Promise<MascotPack | null> {
+	const manifestPath = `${imgDir}/manifest.json`;
+	const animationPath = `${imgDir}/animation.json`;
+	if (!(await existsFile(app, manifestPath)) || !(await existsFile(app, animationPath))) return null;
+
+	let manifest: AppManifest;
+	let animation: AppAnimationFile;
+	try {
+		[manifest, animation] = await Promise.all([
+			app.vault.adapter.read(manifestPath).then((t) => JSON.parse(t) as AppManifest),
+			app.vault.adapter.read(animationPath).then((t) => JSON.parse(t) as AppAnimationFile),
+		]);
+	} catch (e) {
+		console.warn(`[obsidian-shimeji] pack "${name}": manifest.json/animation.json could not be read`, e);
+		return null;
+	}
+	if (!manifest?.sprites || !Array.isArray(animation?.animations)) {
+		console.warn(`[obsidian-shimeji] pack "${name}": looks like an exported Shimeji pack but has no sprites/animations`);
+		return null;
+	}
+
+	const { actions, behaviors, danglingTargets } = convertAppPack(manifest, animation);
+	if (danglingTargets.length > 0) {
+		console.warn(`[obsidian-shimeji] pack "${name}": ${danglingTargets.length} transition target(s) are not defined and were dropped: ${danglingTargets.join(", ")}`);
+	}
+	console.info(`[obsidian-shimeji] pack "${name}" loaded from an exported Shimeji bundle (${animation.schema_id}): ${actions.size} actions, ${behaviors.size} behaviours, ${manifest.sprites.spriteCount} sprites`);
+
+	const resolvedCache = new Map<string, string>();
+	return {
+		id: name,
+		name: manifest.name || name,
+		actions,
+		behaviors,
+		resolveImage: (rawPath: string): string => {
+			const cached = resolvedCache.get(rawPath);
+			if (cached !== undefined) return cached;
+			const resolved = app.vault.adapter.getResourcePath(normalizePath(`${imgDir}/${rawPath.replace(/^[/\\]+/, "")}`));
+			resolvedCache.set(rawPath, resolved);
+			return resolved;
+		},
+		resolveSound: () => undefined,
+		imgDir,
+	};
 }
 
 async function tryLoadCharacter(app: App, name: string, imgDir: string, confDir: string, root: string): Promise<MascotPack | null> {
@@ -144,12 +199,19 @@ export async function loadPacksFromFolder(app: App, root: string): Promise<Masco
 
 	if (subNames.length === 0) {
 		const name = root.split("/").pop() || "Mascot";
-		const pack = await tryLoadCharacter(app, name, `${root}/img`, `${root}/conf`, root);
+		const pack = (await tryLoadAppCharacter(app, name, `${root}/img`)) ?? (await tryLoadCharacter(app, name, `${root}/img`, `${root}/conf`, root));
 		if (pack) packs.push(pack);
 		return packs;
 	}
 
 	for (const name of subNames) {
+		// An exported app bundle first: it carries everything it needs, and the shared-conf
+		// candidate below would otherwise claim it and load it against the wrong sprites.
+		const exported = await tryLoadAppCharacter(app, name, `${root}/img/${name}`);
+		if (exported) {
+			packs.push(exported);
+			continue;
+		}
 		const confDirCandidates = [`${root}/img/${name}/conf`, `${root}/conf/${name}`, `${root}/conf`];
 		for (const confDir of confDirCandidates) {
 			const loaded = await tryLoadCharacter(app, name, `${root}/img/${name}`, confDir, root);
