@@ -92,6 +92,25 @@ const ROAM_ARRIVAL_PX = 48;
  * area convincingly instead of stopping just barely outside it and re-triggering next tick. */
 const AVOID_CROWD_TARGET_PX = 140;
 
+/**
+ * How long a mascot leaves crowd avoidance alone after using it once.
+ *
+ * Avoidance triggers on a finished Move, and is itself a Move — so on a floor with no uncrowded
+ * spot left to reach, every avoidance completes straight into the next neighbour and qualifies to
+ * run again. Reported from the wild as mascots "dashing left to right on the floor for an hour on
+ * end, like it had bugged out", and reproduced at twenty mascots on one floor: one of them covered
+ * 5663px in thirty seconds, which is Dash's own top speed sustained essentially without a break.
+ *
+ * The cap is what makes avoidance self-limiting. Its job is not to hunt down empty floor — on a
+ * crowded floor there is none, and no amount of dashing will find it — it is to avoid *settling*
+ * on top of somebody. Once per crowd is enough to serve that, and a mascot that has just moved and
+ * is still crowded has learnt the only thing worth knowing: here is as good as anywhere.
+ *
+ * Eight seconds is comfortably longer than the pack's own short actions, so the mascot visibly
+ * gets on with something else in between rather than appearing to hesitate.
+ */
+const AVOID_CROWD_COOLDOWN_MS = 8000;
+
 /** Kept off the floor's own edges when picking a clear-of-the-crowd spot, the same kind of margin
  * ordinary pack formulas (workArea.left+64, etc.) leave for themselves. */
 const FLOOR_EDGE_MARGIN_PX = 20;
@@ -210,6 +229,8 @@ export class BehaviorAI {
 	private spotTravelActions?: string[];
 	/** A fixed sequence of moves being performed in order — see startScript. */
 	private script?: { steps: ScriptedMove[]; index: number; repeat: number };
+	/** Time left before crowd avoidance may fire again — see AVOID_CROWD_COOLDOWN_MS. */
+	private avoidCrowdCooldownMs = 0;
 	/**
 	 * What the mascot is currently *doing* about an outstanding order, when that is more than simply
 	 * walking there. Each phase is a piece of physical work with an animation behind it, which is the
@@ -611,6 +632,7 @@ export class BehaviorAI {
 	 */
 	private maybeAvoidCrowd(env: PushEnv, ledges: Ledge[], nearbyMascotX: number | undefined): boolean {
 		if (nearbyMascotX === undefined) return false;
+		if (this.avoidCrowdCooldownMs > 0) return false;
 		const { physics } = env.mascot;
 		const floor = physics.currentFloor;
 		if (!physics.grounded || !floor || floor.kind !== "floor") return false;
@@ -625,7 +647,12 @@ export class BehaviorAI {
 		const route = findRoute(ledges, { x: physics.x, y: physics.y }, { x: targetX, y: physics.y }, floor, { arriveWithin: ROAM_ARRIVAL_PX, speeds: this.routeSpeeds });
 		const next = route[0];
 		if (!next) return false;
-		return this.startRouteAction(env, ledges, next.via, next.x, next.y, route.length);
+		if (!this.startRouteAction(env, ledges, next.via, next.x, next.y, route.length)) return false;
+		// Only once the move is genuinely under way: a leg that could not be started has not avoided
+		// anything, and charging the mascot a cooldown for it would silently disable avoidance for a
+		// pack whose walk action is missing.
+		this.avoidCrowdCooldownMs = AVOID_CROWD_COOLDOWN_MS;
+		return true;
 	}
 
 	/**
@@ -954,6 +981,7 @@ export class BehaviorAI {
 		// pane's underside) regardless of what action put it there, most commonly just having
 		// walked into one — see updateWallCeilingAdherence.
 		updateWallCeilingAdherence(mascot.physics, ledges);
+		this.avoidCrowdCooldownMs = Math.max(0, this.avoidCrowdCooldownMs - dt * 1000);
 
 		// Checked every tick, not just when a behaviour ends, and that is what makes falling through a
 		// mid-air spot count as reaching it: the mascot is within range for a tick or two on the way
