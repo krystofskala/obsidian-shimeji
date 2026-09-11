@@ -16,6 +16,7 @@ import { ObsidianDomEnvironment } from "./engine/Environment";
 import { Mascot } from "./engine/Mascot";
 import type { PaneActions } from "./engine/PaneActions";
 import { Random } from "./engine/Random";
+import { castOneOfEach } from "./shimeji/casting";
 import { Stage } from "./engine/Stage";
 import { DEFAULT_ENGINE_CONFIG, type EngineConfig } from "./engine/types";
 import { minClimbableY } from "./engine/Ledges";
@@ -1000,6 +1001,38 @@ export default class ShimejiPlugin extends Plugin {
 				current !== null && this.settings.activePackIds.includes(current) && this.availablePacks.some((p) => p.id === current);
 			if (!stillValid) this.attachActivePack(mascot, this.pickPackId());
 		}
+	}
+
+	/**
+	 * Gives every mascot on screen a character of its own, dismissing whoever is left over.
+	 *
+	 * The decision itself lives in casting.ts, where it can be tested without a stage; this is the
+	 * part that needs the vault — which characters are enabled, and how to put one on.
+	 *
+	 * Draws from the *enabled* characters, the same pool spawning uses: a character switched off in
+	 * settings is one the user has said they do not want, and this is not the place to overrule it.
+	 */
+	randomizeCharacters(): void {
+		const mascots = [...(this.stage?.getMascots() ?? [])];
+		const available = this.settings.activePackIds.filter((id) => this.availablePacks.some((p) => p.id === id));
+		if (mascots.length === 0 || available.length === 0) {
+			new Notice(available.length === 0 ? "Shimeji: no characters are enabled" : "Shimeji: nobody is on screen");
+			return;
+		}
+
+		const change = castOneOfEach(
+			mascots.map((mascot) => ({ subject: mascot, packId: this.mascotPackId.get(mascot) ?? null })),
+			available,
+			new Random(),
+		);
+		for (const { subject, packId } of change.assign) this.attachActivePack(subject, packId);
+		for (const subject of change.dismiss) this.stage?.removeMascot(subject);
+
+		const left = mascots.length - change.dismiss.length;
+		const parts = [`${left} character${left === 1 ? "" : "s"} on screen`];
+		if (change.assign.length > 0) parts.push(`${change.assign.length} reassigned`);
+		if (change.dismiss.length > 0) parts.push(`${change.dismiss.length} dismissed as duplicates`);
+		new Notice(`Shimeji: ${parts.join(", ")}`);
 	}
 
 	applyScale(): void {
@@ -2122,6 +2155,12 @@ export default class ShimejiPlugin extends Plugin {
 				.setTitle("Remove all Shimejis")
 				.setIcon("trash-2")
 				.onClick(() => this.stage?.removeAllMascots()),
+		);
+		menu.addItem((item) =>
+			item
+				.setTitle("Randomize characters (one of each)")
+				.setIcon("shuffle")
+				.onClick(() => this.randomizeCharacters()),
 		);
 		// Real shimeji-ee actually has *two* separate "Reduce to One!"/"Follow Mouse!" items —
 		// the tray's own (global, every character — see the shimeji-reduce-to-one/
