@@ -615,6 +615,8 @@ export class ActionRunner {
 				if (frame.action.embeddedName === "ScanInteract") return this.tickScanInteract(frame, env, dt, ledges);
 				// SelfDestruct (v1.0.13): play the animation out, then remove this mascot.
 				if (frame.action.embeddedName === "SelfDestruct") return this.tickSelfDestruct(frame, env, dt, ledges);
+				// Transform: play the animation out, then become a different character entirely.
+				if (frame.action.embeddedName === "Transform") return this.tickTransform(frame, env, dt, ledges);
 				// Regist (e.g. the real pack's "Resisting", a struggle animation nested inside
 				// Dragged): every real-pack Pose under it is Velocity="0,0" — it's a pure held
 				// pose-cycle with no physics tie-in at all, unlike Fall/Thrown/ChaseMouse. Without
@@ -748,7 +750,12 @@ export class ActionRunner {
 			frame.action.type === "Animate" ||
 			frame.action.embeddedName === "Breed" ||
 			frame.action.embeddedName === "ThrowIE" ||
-			frame.action.embeddedName === "SelfDestruct";
+			frame.action.embeddedName === "SelfDestruct" ||
+			// Transform extends Animate in the original too, and needs the cap for the same reason
+			// SelfDestruct does: becoming another character is what it does at the *end* of its one
+			// cycle, so without a cap it holds its last pose forever and never fires. The pack that
+			// prompted this references it with no Duration at all, which makes the hold infinite.
+			frame.action.embeddedName === "Transform";
 		const totalPoseCycleMs = poses.reduce((sum, p) => sum + p.durationMs, 0);
 		const durationOverride = numOrUndefined(frame.locals.Duration);
 		const effectiveDurationMs = Math.min(
@@ -1034,6 +1041,32 @@ export class ActionRunner {
 		const done = this.tickHold(frame, env, dt, ledges);
 		if (done) env.mascot.selfDestruct();
 		return done;
+	}
+
+	/**
+	 * Real `Transform`: plays its animation once and then replaces the mascot with a different
+	 * character, optionally starting it on a named behavior.
+	 *
+	 * Built like SelfDestruct because it is the same shape — an Animate that does something
+	 * irreversible when its cycle ends — and its parameters live on the Action itself
+	 * (`TransformMascot`, `TransformBehavior`), the same convention Fall's Gravity and ThrowIE's
+	 * InitialVX follow, rather than being reference-site overrides.
+	 *
+	 * Without this the whole action was unrecognised and fell through to plain gravity, so the
+	 * Eevee egg cracked through all five stages and then sat there being an egg.
+	 */
+	private tickTransform(frame: Frame, env: PushEnv, dt: number, ledges: Ledge[]): boolean {
+		const done = this.tickHold(frame, env, dt, ledges);
+		if (!done) return false;
+		// Read straight off the action's own attributes, which is where the real class declares
+		// them — not reference-site overrides, so they never reach frame.locals.
+		const target = (frame.action.params.TransformMascot ?? "").trim();
+		if (target === "") {
+			console.warn(`[obsidian-shimeji] action "${frame.action.name}" is a Transform with no TransformMascot, so there is nothing to become`);
+			return true;
+		}
+		env.mascot.transformInto(target, (frame.action.params.TransformBehavior ?? "").trim() || undefined);
+		return true;
 	}
 
 	/**

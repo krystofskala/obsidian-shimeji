@@ -333,6 +333,7 @@ export default class ShimejiPlugin extends Plugin {
 			// falling back to a guessed `.workspace` selector — see Environment.ts.
 			environment: new ObsidianDomEnvironment(this.app.workspace),
 			onMascotCreated: (mascot, bornBehaviorName, parent, forcedPackId) => this.onMascotCreated(mascot, bornBehaviorName, parent, forcedPackId),
+			hasPack: (packRef) => this.resolvePackRef(packRef) !== null,
 			onContextMenu: (mascot, ev) => this.showMascotContextMenu(mascot, ev),
 			getMsSinceVaultActivity: () => Date.now() - this.lastVaultActivityAt,
 		});

@@ -34,6 +34,10 @@ export interface StageOptions {
 	 * `forcedPackId` is spawnMascot's own passthrough (see its own comment) for "this specific
 	 * character, but otherwise an ordinary fresh spawn" — real per-mascot "Another One!". */
 	onMascotCreated?: (mascot: Mascot, bornBehaviorName?: string, parent?: Mascot, forcedPackId?: string | null) => void;
+	/** Whether a character named in a pack's `TransformMascot` is one this vault actually has.
+	 * Stage has no concept of packs, so the Obsidian layer answers. Absent means "assume yes",
+	 * which keeps every existing caller and test behaving as before. */
+	hasPack?: (packRef: string) => boolean;
 	onContextMenu?: (mascot: Mascot, ev: MouseEvent) => void;
 	/** Passed straight through to every mascot's MascotDeps — see Mascot's own field doc. */
 	getMsSinceVaultActivity?: () => number;
@@ -302,6 +306,25 @@ export class Stage {
 				}
 			},
 			requestRemoval: (mascot) => this.removeMascot(mascot),
+			transformInto: (mascot, packRef, behaviorName) => {
+				// Checked before anything is destroyed. A pack can name a character this vault does
+				// not have — Eevee_Egg's own HatchShiny becomes "Umbreon_Shiny", which the user has
+				// since removed — and the ordinary spawn path treats an unknown name as "pick one",
+				// so the egg would have hatched into whatever random character happened to be
+				// active. Staying an egg is the honest outcome, and it says so.
+				if (this.opts.hasPack && !this.opts.hasPack(packRef)) {
+					console.warn(`[obsidian-shimeji] a mascot tried to transform into "${packRef}", which is not among the loaded characters — leaving it as it is`);
+					return;
+				}
+				const { x, y } = mascot.physics;
+				const facing = mascot.physics.facing;
+				// The old one leaves first, deliberately: a transform swaps one mascot for another,
+				// so at the population cap spawning first would simply fail and the character would
+				// be stuck mid-transformation forever — an egg that cracks and then never hatches.
+				this.removeMascot(mascot);
+				const born = this.spawnMascot(x, y, behaviorName, undefined, packRef);
+				if (born) born.physics.facing = facing;
+			},
 			findMascotWithAffordance: (affordance) => this.getMascotWithAffordance(affordance),
 			onContextMenu: this.opts.onContextMenu,
 			getMsSinceVaultActivity: this.opts.getMsSinceVaultActivity,

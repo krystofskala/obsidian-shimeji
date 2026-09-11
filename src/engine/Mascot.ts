@@ -212,6 +212,11 @@ export interface MascotDeps {
 	 * `getMascot().dispose()` directly. Routed through deps because only the owner (Stage) can
 	 * actually drop it from the live list. */
 	requestRemoval?: (mascot: Mascot) => void;
+	/** Real `Transform`: replaces this mascot with one of another character, in place. Distinct
+	 * from spawnSibling because it is population-neutral — one goes, one arrives — so it must not
+	 * be gated on the breeding toggle the way a Breed clone is. `packRef` is whatever the pack
+	 * XML wrote in TransformMascot, an id or a display name. */
+	transformInto?: (mascot: Mascot, packRef: string, behaviorName: string | undefined) => void;
 	/** Real `Manager.getMascotWithAffordance(String)`: the first live mascot currently
 	 * broadcasting that affordance, or undefined. The basis of every mascot-to-mascot
 	 * interaction in the real engine — see Mascot.affordances. */
@@ -404,6 +409,20 @@ export class Mascot {
 	requestSibling(offsetX: number, offsetY: number, bornBehaviorName?: string, options?: SiblingOptions): void {
 		const signedOffsetX = this.physics.facing === 1 ? -offsetX : offsetX;
 		this.deps.spawnSibling?.(this.physics.x + signedOffsetX, this.physics.y + offsetY, bornBehaviorName, this, options);
+	}
+
+	/**
+	 * Real `Transform` (`com.group_finity.mascot.action.Transform`): this character becomes a
+	 * different one, in place, once the action's animation has played out.
+	 *
+	 * How the Eevee egg hatches into an Umbreon, and the reason a pack can tell a whole story
+	 * across two characters. Population-neutral by definition — the egg leaves as the Umbreon
+	 * arrives — which is why it does not go through the Breed path and is not gated on the
+	 * breeding setting.
+	 */
+	transformInto(packRef: string, behaviorName: string | undefined): void {
+		this.affordances.length = 0;
+		this.deps.transformInto?.(this, packRef, behaviorName);
 	}
 
 	/** Real SelfDestruct: `getMascot().dispose()` once its animation has played out. */
