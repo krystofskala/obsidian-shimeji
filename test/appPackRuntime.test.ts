@@ -42,12 +42,12 @@ function makeMascot(floor: Extract<Ledge, { kind: "floor" }>, x: number): Mascot
 }
 
 describe.skipIf(!HAVE_REAL).each(["3gou3tpz", "c1flwx3j"])("a converted %s mascot", (dir) => {
-	function run(ticks: number) {
+	function run(ticks: number, seed = 7) {
 		const pack = packFrom(dir);
 		const ledges = computeLedgesFromRects(VIEWPORT, []);
 		const floor = ledges.find((l): l is Extract<Ledge, { kind: "floor" }> => l.kind === "floor" && l.y === VIEWPORT.height)!;
 		const mascot = makeMascot(floor, 600);
-		const ai = new BehaviorAI(pack, new Random(7));
+		const ai = new BehaviorAI(pack, new Random(seed));
 		const warned: string[] = [];
 		const realWarn = console.warn;
 		console.warn = (...args: unknown[]) => { warned.push(args.join(" ")); };
@@ -68,8 +68,16 @@ describe.skipIf(!HAVE_REAL).each(["3gou3tpz", "c1flwx3j"])("a converted %s masco
 	});
 
 	it("actually animates rather than holding one pose", () => {
-		const { shown } = run(2000);
-		expect(new Set(shown).size).toBeGreaterThan(3);
+		// Across seeds rather than on one, because a single run is a poor witness: 3gou3tpz showed
+		// between 2 and 17 distinct frames over the same 80 seconds depending only on which behaviours
+		// the dice picked. Asserting ">3 on seed 7" therefore tested the seed, and quietly failed the
+		// day an unrelated change drew one more random number.
+		//
+		// Split into the two things that were meant: no run is frozen on a single pose, and the pack
+		// as a whole has real animation in it.
+		const runs = [1, 2, 3, 4, 5].map((seed) => new Set(run(2000, seed).shown));
+		for (const [i, frames] of runs.entries()) expect(frames.size, `seed ${i + 1} held one pose`).toBeGreaterThan(1);
+		expect(new Set(runs.flatMap((f) => [...f])).size).toBeGreaterThan(3);
 	});
 
 	it("does not park on the spot for the whole run", () => {

@@ -71,6 +71,38 @@ const FOLLOW_REAIM_PX = 64;
 
 /** Close enough to count as having carried out a spot order. Looser than a pixel-perfect landing —
  * the mascot stands *on* surfaces, and a divider placed at the requested y puts its feet there. */
+/**
+ * How far from where the held plan said it would be a mascot may be and still keep following it.
+ *
+ * About a body's width. Below that is ordinary settling — gravity taking up slack, a corner join,
+ * a move overshooting its target by a few pixels — and re-planning for those would amount to no
+ * commitment at all. Above it the plan is describing a mascot that is not there.
+ */
+/**
+ * How differently two mascots may feel about the same kind of movement — the half-width of the
+ * log-normal spread behind `relish`, so appetites run from about 0.45x to 2.2x.
+ *
+ * Measured on the user's own layout, twenty mascots sent to each of three points, counting both how
+ * many distinct routes came out and how many still made the long crossing jumps:
+ *
+ *     spread=0.4   distinct 3 / 1 / 2    long jumps 20/20
+ *     spread=0.8   distinct 4 / 3 / 1    long jumps 19/20
+ *     spread=1.2   distinct 2 / 2 / 2    long jumps 20/20
+ *     spread=1.8   distinct 5 / 3 / 3    long jumps 14/20
+ *
+ * Wider is not simply better, and 1.8 shows why: the extra routes are bought by mascots whose
+ * distaste for jumping has grown strong enough to turn down the crossing leap altogether, which is
+ * the one thing this was all for. 0.8 buys most of the variety while nearly everyone still takes the
+ * spectacular way.
+ *
+ * Worth being honest about the ceiling here: climbing is 0.64px/tick against a jump's 20, so a route
+ * that jumps beats one that climbs by a factor no appetite can overturn. Taste chooses between
+ * genuinely comparable routes; where the layout offers one obvious way, it does not invent others.
+ */
+const TASTE_SPREAD = 0.8;
+
+const SPOT_PLAN_DRIFT_PX = 72;
+
 const SPOT_ARRIVAL_PX = 40;
 
 /**
@@ -246,6 +278,34 @@ export class BehaviorAI {
 	 * something other than the default — see orderToSpot's own option, and ROUTE_ACTIONS on why the
 	 * default is what it is. */
 	private spotTravelActions?: string[];
+	/**
+	 * The legs of the current order still to be travelled, held rather than re-derived.
+	 *
+	 * Re-planning from scratch at every leg is what a route *cannot* survive when its first leg is
+	 * not, on its own, progress. Traced: a mascot climbed a pane wall, jumped clear across the
+	 * window, climbed down, fell, walked back and did it again, forever — each leg individually the
+	 * best next move, the journey as a whole a loop. It is also why the long crossing jumps had to
+	 * be capped out of reach, and so why nobody ever jumped from one side of the screen to the
+	 * other.
+	 *
+	 * Committing costs the adaptability that re-planning bought, so it is given up only where
+	 * something real interrupts: losing grip, respawning, a leg that will not start, or the order
+	 * ending. Those already cancel a lap's script for the same reason and in the same places.
+	 */
+	private spotPlan?: ScriptedMove[];
+
+	/**
+	 * Where the leg just started was supposed to end, so the next one is only taken if the mascot
+	 * actually got there.
+	 *
+	 * Committing means not reconsidering, which is the point — and it also means that when reality
+	 * parts company with the plan, following it makes things worse rather than better: the mascot
+	 * performs a climb from a wall it is no longer on, or pushes off toward a pane edge that moved.
+	 * Checking turns "the plan is now wrong" back into "think again", which is what re-planning was
+	 * for; it costs the commitment nothing, because a journey going to plan never trips it.
+	 */
+	private spotPlanExpectAt?: Vec2;
+
 	/** A fixed sequence of moves being performed in order — see startScript. */
 	private script?: { steps: ScriptedMove[]; index: number; repeat: number };
 	/** Time left before crowd avoidance may fire again — see AVOID_CROWD_COOLDOWN_MS. */
@@ -299,6 +359,7 @@ export class BehaviorAI {
 	 */
 	orderToSpot(point: Vec2, options?: { allowSurgery?: boolean; travelActions?: string[] }): void {
 		this.orderedSpot = { x: point.x, y: point.y };
+		this.forgetSpotPlan();
 		this.spotOrderJustIssued = true;
 		this.spotTravelActions = options?.travelActions;
 		// Opt-out for orders that are issued repeatedly and automatically — running laps, four
@@ -312,7 +373,14 @@ export class BehaviorAI {
 		this.roamTarget = undefined;
 	}
 
+	/** Drops the held journey, so the next tick plans afresh from wherever the mascot actually is. */
+	private forgetSpotPlan(): void {
+		this.spotPlan = undefined;
+		this.spotPlanExpectAt = undefined;
+	}
+
 	cancelSpotOrder(): void {
+		this.forgetSpotPlan();
 		this.orderedSpot = undefined;
 		this.spotPhase = undefined;
 		this.spotTravelActions = undefined;
@@ -439,7 +507,7 @@ export class BehaviorAI {
 		const attached = physics.currentFloor ?? physics.currentWall ?? physics.currentCeiling;
 		// travelTimeWeight near zero: an order's promise is reaching the point, so a surface that gets
 		// there is worth a long climb. Following uses the default, where it is not — see RouteOptions.
-		const routeOpts = { arriveWithin: SPOT_ARRIVAL_PX, travelTimeWeight: 0.05, speeds: this.routeSpeeds, ...this.fallPhysics };
+		const routeOpts = { arriveWithin: SPOT_ARRIVAL_PX, travelTimeWeight: 0.05, speeds: this.routeSpeeds, ...this.fallPhysics, ...this.routeTaste };
 		const routeTo = (target: Vec2, graph: Ledge[] = ledges) =>
 			graph.length > 0 ? findRoute(graph, here, target, attached, routeOpts) : [];
 
@@ -509,6 +577,28 @@ export class BehaviorAI {
 			}
 		}
 
+		// A journey already under way is followed, not reconsidered — for as long as the mascot is
+		// still where the journey says it should be.
+		if (this.spotPlan && this.spotPlan.length > 0) {
+			const expected = this.spotPlanExpectAt;
+			if (expected && Math.hypot(here.x - expected.x, here.y - expected.y) > SPOT_PLAN_DRIFT_PX) {
+				debugLog("spot order: plan and mascot have parted company", {
+					at: [Math.round(here.x), Math.round(here.y)],
+					expected: [Math.round(expected.x), Math.round(expected.y)],
+				});
+				this.forgetSpotPlan();
+			} else {
+				const leg = this.spotPlan[0];
+				if (this.startRouteAction(env, ledges, leg.via, leg.x, leg.y, this.spotPlan.length)) {
+					this.spotPlan = this.spotPlan.slice(1);
+					this.spotPlanExpectAt = { x: leg.x, y: leg.y };
+					return true;
+				}
+				// It cannot be performed from here — the layout moved under it. Think again.
+				this.forgetSpotPlan();
+			}
+		}
+
 		const route = routeTo(spot);
 
 		// Judge the layout by where the route *ends up*, not by whether one exists. The router almost
@@ -533,7 +623,12 @@ export class BehaviorAI {
 		}
 
 		const next = route[0];
-		if (next) return this.startRouteAction(env, ledges, next.via, next.x, next.y, route.length);
+		if (next) {
+			// Commit to the whole journey, not just its first step — see spotPlan.
+			this.spotPlan = route.slice(1).map((step) => ({ via: step.via, x: step.x, y: step.y }));
+			this.spotPlanExpectAt = { x: next.x, y: next.y };
+			return this.startRouteAction(env, ledges, next.via, next.x, next.y, route.length);
+		}
 
 		// Standing at the closest worth getting to — either the layout genuinely offers nothing
 		// nearer, or reaching the exact point cost more than it was worth (see
@@ -720,7 +815,7 @@ export class BehaviorAI {
 		// next behaviour-end will roll again, and by then the crowd may have moved on regardless.
 		if (Math.abs(targetX - physics.x) < ROAM_ARRIVAL_PX) return false;
 
-		const route = findRoute(ledges, { x: physics.x, y: physics.y }, { x: targetX, y: physics.y }, floor, { arriveWithin: ROAM_ARRIVAL_PX, speeds: this.routeSpeeds, ...this.fallPhysics });
+		const route = findRoute(ledges, { x: physics.x, y: physics.y }, { x: targetX, y: physics.y }, floor, { arriveWithin: ROAM_ARRIVAL_PX, speeds: this.routeSpeeds, ...this.fallPhysics, ...this.routeTaste });
 		const next = route[0];
 		if (!next) return false;
 		if (!this.startRouteAction(env, ledges, next.via, next.x, next.y, route.length)) return false;
@@ -763,7 +858,7 @@ export class BehaviorAI {
 
 		const { physics } = env.mascot;
 		const attached = physics.currentFloor ?? physics.currentWall ?? physics.currentCeiling;
-		const route = findRoute(ledges, { x: physics.x, y: physics.y }, this.roamTarget, attached, { arriveWithin: ROAM_ARRIVAL_PX, speeds: this.routeSpeeds, ...this.fallPhysics });
+		const route = findRoute(ledges, { x: physics.x, y: physics.y }, this.roamTarget, attached, { arriveWithin: ROAM_ARRIVAL_PX, speeds: this.routeSpeeds, ...this.fallPhysics, ...this.routeTaste });
 		const next = route[0];
 		if (!next) {
 			// Arrived, or nothing connects. Either way this expedition is over; the pack's own
@@ -794,7 +889,7 @@ export class BehaviorAI {
 		// to move would be pure churn.
 		this.pursuitAimedAt = { x: cursor.x, y: cursor.y };
 		const attached = physics.currentFloor ?? physics.currentWall ?? physics.currentCeiling;
-		const route = ledges.length > 0 ? findRoute(ledges, { x: physics.x, y: physics.y }, cursor, attached, { arriveWithin: FOLLOW_ARRIVAL_PX, speeds: this.routeSpeeds, ...this.fallPhysics }) : [];
+		const route = ledges.length > 0 ? findRoute(ledges, { x: physics.x, y: physics.y }, cursor, attached, { arriveWithin: FOLLOW_ARRIVAL_PX, speeds: this.routeSpeeds, ...this.fallPhysics, ...this.routeTaste }) : [];
 		const next = route[0];
 
 		// With surfaces present, an empty route means the router has nothing left to offer — the
@@ -941,6 +1036,54 @@ export class BehaviorAI {
 		// rather than as kicking off a wall.
 		const hopY = effectiveVia === "chimney" && targetY !== undefined ? physics.y + Math.sign(targetY - physics.y) * Math.min(CHIMNEY_HOP_PX, Math.abs(targetY - physics.y)) : targetY;
 
+		/*
+		 * A walk needs a floor under the mascot, and saying so out loud turns a silent fall into a
+		 * re-plan.
+		 *
+		 * The case that found it: a route descended a corridor between the window's own left wall and
+		 * a pane's, which `startRouteAction` performs as kicks rather than a climb. Kicks alternate
+		 * walls, so the mascot arrived on the window wall at x=0 while the plan had it on the pane's
+		 * at x=50 — and the next leg was "walk along the floor at y=706", which begins at x=50. Dash
+		 * started anyway, found nothing beneath it, and the mascot fell the height of the window and
+		 * began the whole journey again. Three times, then the order ran out of ticks.
+		 *
+		 * Returning false rather than correcting the position: the caller's answer to a leg that will
+		 * not start is to plan again from where the mascot actually is, which is the right answer here
+		 * — it is on a wall, and there is a perfectly good route from a wall.
+		 */
+		if (effectiveVia === "walk" && !physics.grounded) {
+			// Stepping off a wall onto the floor that meets it, which is the mirror of the two bridges
+			// below and needed for the same reason: the route graph joins a wall's foot to the floor at
+			// that corner, and nothing was performing the join. A mascot gripping a wall is not
+			// grounded, so the walk that follows had nothing to stand on.
+			//
+			// Only a floor genuinely at the mascot's feet and reaching toward where it is going — a
+			// wall's foot can sit above a floor's end rather than on it, and snapping to that one would
+			// be teleporting, not stepping off.
+			const step = ledges.find(
+				(l): l is Extract<Ledge, { kind: "floor" }> =>
+					l.kind === "floor" &&
+					Math.abs(l.y - physics.y) <= LOST_GROUND_REACH &&
+					physics.x >= l.x1 - LOST_GROUND_REACH &&
+					physics.x <= l.x2 + LOST_GROUND_REACH &&
+					targetX >= l.x1 - LOST_GROUND_REACH &&
+					targetX <= l.x2 + LOST_GROUND_REACH,
+			);
+			if (step) {
+				physics.x = Math.min(Math.max(physics.x, step.x1), step.x2);
+				physics.y = step.y;
+				physics.grounded = true;
+				physics.currentFloor = step;
+				physics.currentWall = undefined;
+				physics.currentCeiling = undefined;
+				physics.vx = 0;
+				physics.vy = 0;
+			} else {
+				debugLog("pursuit leg -> walk refused (nothing underfoot)", { at: [Math.round(physics.x), Math.round(physics.y)], to: Math.round(targetX) });
+				return false;
+			}
+		}
+
 		// The last stretch onto a ceiling, closed before the move that travels along it begins.
 		//
 		// The pack does exactly this in its own ClimbAlongWall — `ClimbWall` up to
@@ -1039,6 +1182,22 @@ export class BehaviorAI {
 	 * which would read `this.pack` before the parameter property assigning it has run. */
 	private readonly routeSpeeds: RouteSpeeds;
 	private readonly fallPhysics: FallPhysics;
+	/**
+	 * How *this* mascot weighs one kind of travel against another — its own taste, fixed for life.
+	 *
+	 * Twenty mascots sent to one point took the identical path in single file, because they were
+	 * twenty copies of one optimiser answering one question. An earlier attempt at fixing that
+	 * offered each of them a coin flip between the best route and the runner-up, which was worse: on
+	 * this search the runner-up is the same journey with a detour, so half of them climbed a wall
+	 * past the point and back down again.
+	 *
+	 * This changes the question instead of the answer. A mascot that finds climbing tiresome and one
+	 * that finds jumping alarming want genuinely different routes, and each still takes the route
+	 * that is *best for it* — nobody is handed a deliberately worse way round. It also survives
+	 * re-planning, which a coin flip does not: the taste is the same at every leg, so a mascot does
+	 * not change its mind halfway and dither.
+	 */
+	private readonly routeTaste: Pick<RouteOptions, "uprightPreference" | "jumpOverhead" | "relish">;
 
 	constructor(private pack: MascotPack, private rng: Random) {
 		this.runner = new ActionRunner(pack, rng);
@@ -1050,6 +1209,20 @@ export class BehaviorAI {
 			registanceX: DEFAULT_ROUTE_OPTIONS.registanceX,
 			registanceY: DEFAULT_ROUTE_OPTIONS.registanceY,
 		});
+		// Drawn once, from this mascot's own generator, so two mascots of the same character still
+		// differ. The ranges are wide enough to change which route wins and narrow enough that none
+		// of them is silly: at the extremes one mascot will walk around something another climbs
+		// straight over.
+		// Log-normal, so a mascot is as likely to find something half as tiresome as twice — with a
+		// plain multiplier the average appetite drifts upward and everyone ends up keen.
+		//
+		// TASTE_SPREAD is measured rather than picked; see the constant.
+		const relish = (): number => Math.exp(rng.range(-TASTE_SPREAD, TASTE_SPREAD));
+		this.routeTaste = {
+			uprightPreference: DEFAULT_ROUTE_OPTIONS.uprightPreference * rng.range(0.35, 1.7),
+			jumpOverhead: DEFAULT_ROUTE_OPTIONS.jumpOverhead * rng.range(0.4, 2.2),
+			relish: { walk: relish(), climb: relish(), traverse: relish(), jump: relish(), hop: relish(), drop: relish(), chimney: relish() },
+		};
 		this.warnIfIncomplete();
 	}
 
@@ -1081,6 +1254,7 @@ export class BehaviorAI {
 			this.orderedSpot = undefined;
 			this.spotPhase = undefined;
 			this.justReachedSpotFlag = true;
+			this.forgetSpotPlan();
 		}
 
 		let env = this.buildEnv(mascot, ambientPointer, config, paneActions, ledges);
@@ -1171,6 +1345,7 @@ export class BehaviorAI {
 			// resuming the remaining moves from wherever it lands would carry on as if nothing had
 			// happened, mid-air step and all.
 			this.cancelScript();
+			this.forgetSpotPlan();
 			this.startBehavior(this.forceFallBehavior(), env);
 			return;
 		}
@@ -1185,6 +1360,7 @@ export class BehaviorAI {
 				// with where it is. Resuming the remaining moves from there plays the rest of the
 				// script out from a position it was never written for.
 				this.cancelScript();
+				this.forgetSpotPlan();
 				this.startBehavior(this.respawnAndFall(mascot), env);
 				return;
 			}

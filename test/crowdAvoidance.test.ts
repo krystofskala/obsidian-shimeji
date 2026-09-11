@@ -31,6 +31,10 @@ function makeMascot(floor: Extract<Ledge, { kind: "floor" }>, x: number): Mascot
 	return {
 		physics, stateElapsedMs: 0, affordances: [] as string[], hotspots: [], variables: new Map(),
 		setVisualImage() {}, getViewportSize: () => ({ width: VIEWPORT.width, height: VIEWPORT.height }),
+		// The pack can roll SplitIntoTwo like any other behaviour, and whether it does depends on the
+		// seed — so a stub without this is a test that passes on lucky dice. Ignored rather than
+		// counted: nothing here is about breeding, and the offspring would not be in `mascots`.
+		requestSibling() {},
 		getWorldTop: () => VIEWPORT.top, getTotalMascotCount: () => 1, getSameCharacterCount: () => 1,
 	} as unknown as Mascot;
 }

@@ -127,6 +127,25 @@ export interface RouteOptions {
 	 * the point, however long it takes. Costed in ticks against a distance in pixels, so the units
 	 * only make sense as an exchange rate; at walking speed a pixel is about an eighth of a tick.
 	 */
+	/**
+	 * How much this particular mascot fancies each kind of movement, multiplying that leg's cost
+	 * during the search. 1 — the default for every kind — is "judge it purely on time".
+	 *
+	 * This is the knob that makes twenty mascots take twenty routes, and it works where two earlier
+	 * attempts did not. Picking randomly between the top two answers failed because the runner-up is
+	 * by construction the *same* destination reached worse, so it produced mascots climbing up and
+	 * back down. Jittering the final score failed for the same reason: the score is dominated by how
+	 * near the arrival lands to the target, and there is usually only one best place to stand.
+	 *
+	 * Preferences on the *legs* change which way a mascot goes to the same good destination, which is
+	 * the thing that was actually wanted. A mascot that dislikes climbing bounces up between two
+	 * walls; one that dislikes jumping takes the long way up a pane. Both arrive.
+	 *
+	 * Deliberately applied only to the search, never to `routeDurationTicks` — that estimate is
+	 * compared against pane surgery in real ticks, and a mascot that hates climbing does not thereby
+	 * make climbing slower.
+	 */
+	relish?: Partial<Record<RouteVia, number>>;
 	travelTimeWeight: number;
 	/**
 	 * How much extra distance-from-target a mascot will accept in order to end up **standing** rather
@@ -155,14 +174,22 @@ export const DEFAULT_ROUTE_OPTIONS: RouteOptions = {
 	// Straight-line reach of a targeted `Jumping` onto a wall. `Jumping` is constant-speed motion
 	// toward a point rather than an arc, so nothing about gravity limits it.
 	//
-	// Held at a wall or two rather than a window's width, for now. Longer jumps are what the pack
-	// itself does — JumpFromLeftWall aims clear across the work area — and they produce exactly the
-	// bouncing between the two sides that was asked for, but they also let the search chain cheap
-	// leaps into routes whose first leg is not progress, and per-leg re-planning does not survive
-	// that: traced, a mascot climbed a pane wall, jumped to the far side, climbed down, fell, walked
-	// back and did it again, forever. Committing to a route for the length of a journey is the fix,
-	// and it is a change to how routes are followed, not a number here.
-	maxJumpTo: 420,
+	// A window's width, which is as far as a jump can usefully go. The pack itself aims this far —
+	// JumpFromLeftWall crosses the whole work area — and at 20px/tick the longest of these is under
+	// three seconds in the air.
+	//
+	// It was held at 420 for a while, and the reason is worth keeping because it was not a wrong
+	// guess about distance. Long jumps let the search chain cheap leaps into routes whose *first*
+	// leg is not progress, and re-planning every leg cannot follow such a route: traced, a mascot
+	// climbed a pane wall, jumped to the far side, climbed down, fell, walked back and did it again,
+	// forever. So the cap was standing in for a missing idea. The idea is route commitment —
+	// BehaviorAI.spotPlan — and with a journey held for its whole length these became what they
+	// look like: a mascot kicking off one wall, sailing across the window and catching the other.
+	//
+	// Which, incidentally, is also faster than it has any right to be. Climbing runs at 0.64px/tick
+	// against a jump's 20, so bouncing between two facing walls genuinely beats climbing one of
+	// them, and the router prefers it on the arithmetic rather than because anybody told it to.
+	maxJumpTo: 1750,
 	// ...and how much of that reach has to be sideways. Without a floor on this the cheap answer to
 	// "get higher" was a column of short upward hops inside the gap between two panes.
 	minJumpAcross: 240,
@@ -793,6 +820,14 @@ function jumpBlocked(ledges: Ledge[], from: Vec2, to: Vec2, leaving: Ledge, arri
 	return false;
 }
 
+/**
+ * What a leg costs *this* mascot — real ticks, bent by whatever it happens to enjoy. Only the search
+ * uses this; see `relish`.
+ */
+function searchCost(via: RouteVia, from: Vec2, to: Vec2, opts: RouteOptions, along?: Ledge, ledges?: Ledge[]): number {
+	return stepCost(via, from, to, opts, along, ledges) * (opts.relish?.[via] ?? 1);
+}
+
 function stepCost(via: RouteVia, from: Vec2, to: Vec2, opts: RouteOptions, along?: Ledge, ledges?: Ledge[]): number {
 	const d = distance(from, to);
 	switch (via) {
@@ -957,8 +992,8 @@ export function findRoute(ledges: Ledge[], from: Vec2, target: Vec2, startLedge?
 		for (const transfer of transfersFrom(here.ledge, here.at, target, ledges, opts)) {
 			const cost =
 				here.cost +
-				stepCost(alongVia(here.ledge), here.at, transfer.from, opts, here.ledge, ledges) +
-				stepCost(transfer.via, transfer.from, transfer.at, opts, transfer.to, ledges);
+				searchCost(alongVia(here.ledge), here.at, transfer.from, opts, here.ledge, ledges) +
+				searchCost(transfer.via, transfer.from, transfer.at, opts, transfer.to, ledges);
 			const toKey = keyOf(transfer.to, transfer.at);
 			const existing = visited.get(toKey);
 			// Cost alone, which is what keeps this a Dijkstra: folding in how far the arrival still
@@ -1001,7 +1036,7 @@ export function findRoute(ledges: Ledge[], from: Vec2, target: Vec2, startLedge?
 		const entry = perLedge.get(visit.ledge)!;
 		const upright = visit.ledge.kind === "floor" ? 0 : opts.uprightPreference;
 		const arrival = pointOn(visit.ledge, target);
-		const along = visit.cost + stepCost(alongVia(visit.ledge), visit.at, arrival, opts, visit.ledge, ledges);
+		const along = visit.cost + searchCost(alongVia(visit.ledge), visit.at, arrival, opts, visit.ledge, ledges);
 		scored.push({ key, score: distance(arrival, target) + entry.minCost * opts.travelTimeWeight + upright, along });
 	}
 	if (scored.length === 0) return [];
