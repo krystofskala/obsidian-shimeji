@@ -473,7 +473,171 @@ interface Transfer {
  * for `goal` (which only influences *where* on a candidate surface it aims, never whether the
  * connection exists).
  */
-function transfersFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts: RouteOptions): Transfer[] {
+/**
+ * Whether a leap of this shape reads as a jump rather than as levitation.
+ *
+ * `Jumping` is constant-speed motion toward a point, so geometry forbids nothing and something has
+ * to. Two ways to pass: a short hop needs no sideways travel at all — up onto a pane's lip, down
+ * over its edge — and anything taller has to genuinely go across.
+ *
+ * The ratio is derived rather than chosen. While `maxJumpTo` was 420 and `minJumpAcross` 240, the
+ * steepest jump the two could describe between them rose sqrt(420^2 - 240^2) = 345px over 240px of
+ * travel, and nobody ever complained about the shape of a jump in that regime. 1.44 is that number;
+ * it is rounded to 1.5 because the third digit is not meaningful.
+ *
+ * Raising `maxJumpTo` to a window's width quietly removed that implied bound, which is how the
+ * search came to offer a 962px vertical leap off a pane wall for 338px of sideways travel. Those are
+ * not merely ugly: gaining a thousand pixels of height in one 57-tick leap beats every honest route,
+ * so they crowded out the long crossings the cap was raised to allow in the first place.
+ */
+const MAX_JUMP_RISE_RATIO = 1.5;
+
+/**
+ * Whether both ends of a leap sit on one floor, so walking between them was available all along.
+ *
+ * Jumping is 20px/tick against a walk's 8, so flying is genuinely faster than walking almost
+ * everywhere — the router is not wrong about the arithmetic, and once jumps reached across a window
+ * it started using that. What it produced was a mascot asked to go left, walking *right* to the far
+ * wall, stepping onto it and sailing back across the whole window at floor level. Measured at only
+ * 1.11x the honest cost of simply walking, and completely absurd to watch.
+ *
+ * No amount of tuning fixes that, because nothing about it is a mistake in ticks. What is wrong is
+ * offering the edge at all: a leap whose two ends are both standing room on the same floor is not a
+ * route between them, it is a detour through the air.
+ */
+function alreadyJoinedByFloor(ledges: Ledge[], from: Vec2, to: Vec2): boolean {
+	const lo = Math.min(from.x, to.x);
+	const hi = Math.max(from.x, to.x);
+	return ledges.some(
+		(l) =>
+			l.kind === "floor" &&
+			Math.abs(l.y - from.y) <= ARRIVAL_BUCKET_PX &&
+			Math.abs(l.y - to.y) <= ARRIVAL_BUCKET_PX &&
+			lo >= l.x1 - JOIN_EPS &&
+			hi <= l.x2 + JOIN_EPS,
+	);
+}
+
+function jumpShapeAllowed(across: number, climbed: number, opts: RouteOptions): boolean {
+	return climbed <= opts.maxJumpUp || climbed <= across * MAX_JUMP_RISE_RATIO;
+}
+
+/**
+ * Where along a surface a route may arrive.
+ *
+ * This is the answer to "the router has too few options", and the reason twenty mascots used to
+ * file down one path. Every landing point used to be `pointOn(other, goal)` — the single point on
+ * that surface nearest the target — so each pair of surfaces was joined by exactly one edge, and
+ * that edge was a function of the goal alone. Two mascots with completely different tastes were
+ * choosing between the same handful of points, because there were no others to choose between.
+ * Measured on a six-pane layout: eleven of twenty-four surfaces were never used by any of a
+ * thousand routes, and the whole 1748px window floor offered ten distinct waypoints in total.
+ *
+ * The points worth offering are not evenly spaced ones — they are the places where the layout
+ * *changes*: where a wall comes down onto a floor, where one pane's edge passes another, the top
+ * and bottom of each storey in a stack. Those are exactly the points a route has any reason to
+ * change its mind at, and they come from the geometry rather than from a sampling rate, so a
+ * workspace split into more panes automatically gets more of them. That is what makes a column of
+ * stacked panes usable: each storey boundary is a landing.
+ *
+ * Even spacing is added on top, but only as a backstop for a long surface with nothing else
+ * happening along it — the middle of a wide window floor, where the interesting points are all at
+ * the far ends.
+ */
+const CANDIDATE_SAMPLE_PX = 160;
+/** Two candidates closer than this are the same decision, and keeping both only costs search time. */
+const CANDIDATE_MERGE_PX = 24;
+/** A ceiling on how wide the graph may get, for a workspace split into a great many panes. Reached
+ * only by surfaces spanning most of a large window; the merge distance disposes of most duplicates
+ * long before this does. */
+const MAX_CANDIDATES = 20;
+
+/** A point's position along its own surface — the one coordinate that varies. */
+function alongOf(ledge: Ledge, p: Vec2): number {
+	return ledge.kind === "wall" ? p.y : p.x;
+}
+
+/** Turns a position along a surface back into a point. */
+function atAlong(ledge: Ledge, v: number): Vec2 {
+	return ledge.kind === "wall" ? { x: ledge.x, y: v } : { x: v, y: ledge.y };
+}
+
+function candidatesOn(ledge: Ledge, ledges: Ledge[], goal: Vec2): Vec2[] {
+	const vertical = ledge.kind === "wall";
+	const lo = vertical ? ledge.y1 : ledge.x1;
+	const hi = vertical ? ledge.y2 : ledge.x2;
+	const wanted = clamp(vertical ? goal.y : goal.x, lo, hi);
+
+	const raw: number[] = [lo, hi, wanted];
+	for (const other of ledges) {
+		if (other === ledge) continue;
+		// Every way another surface can mark a position on this one. A wall's two ends matter on a
+		// facing wall (that is the height you can kick across at); a floor's height matters on any
+		// wall beside it; a wall's x matters on any floor beneath it.
+		if (vertical) {
+			if (other.kind === "wall") raw.push(other.y1, other.y2);
+			else raw.push(other.y);
+		} else if (other.kind === "wall") {
+			raw.push(other.x);
+		} else {
+			raw.push(other.x1, other.x2);
+		}
+	}
+	for (let v = lo + CANDIDATE_SAMPLE_PX; v < hi; v += CANDIDATE_SAMPLE_PX) raw.push(v);
+
+	const sorted = raw.map((v) => clamp(v, lo, hi)).sort((a, b) => a - b);
+	const kept: number[] = [];
+	for (const v of sorted) {
+		if (kept.length > 0 && v - kept[kept.length - 1] < CANDIDATE_MERGE_PX) continue;
+		kept.push(v);
+	}
+	// The point nearest the target is the one candidate that must survive thinning — it is what the
+	// old single-point router offered, and a route that cannot end near the target is no route.
+	if (!kept.some((v) => Math.abs(v - wanted) < CANDIDATE_MERGE_PX)) kept.push(wanted);
+
+	if (kept.length <= MAX_CANDIDATES) return kept.map((v) => atAlong(ledge, v));
+	// Thin evenly rather than truncating, so what survives still spans the whole surface.
+	const stride = kept.length / MAX_CANDIDATES;
+	const thinned = new Set<number>([kept[0], kept[kept.length - 1], wanted]);
+	for (let i = 0; i < MAX_CANDIDATES; i++) thinned.add(kept[Math.floor(i * stride)]);
+	return [...thinned].sort((a, b) => a - b).map((v) => atAlong(ledge, v));
+}
+
+/**
+ * Kicking off one wall to the one facing it — how a mascot gets up a corridor quickly instead of
+ * climbing it at 0.64px/tick. Emitted as a single edge covering the whole ascent, and performed one
+ * hop at a time: callers execute only the route's first step and re-plan, so the mascot arrives on
+ * the far wall, re-plans, and kicks back. The alternation is not scripted anywhere — it falls out of
+ * the graph being symmetric.
+ *
+ * The one transfer that depends on where the mascot actually *is* rather than only on the layout,
+ * because a kick starts from the height you have already reached. That is why it is separate: every
+ * other transfer is a property of the surfaces alone and can be worked out once per surface instead
+ * of once per node, which matters a great deal now that there are many nodes per surface.
+ */
+function chimneysFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts: RouteOptions): Transfer[] {
+	if (ledge.kind !== "wall") return [];
+	const out: Transfer[] = [];
+	for (const other of ledges) {
+		if (other === ledge || other.kind !== "wall" || !faceEachOther(ledge, other)) continue;
+		const gap = Math.abs(other.x - ledge.x);
+		const top = Math.max(ledge.y1, other.y1);
+		const bottom = Math.min(ledge.y2, other.y2);
+		// Both walls have to exist at the same heights, with room to gain something by kicking.
+		if (gap < opts.minChimneyGap || gap > opts.maxJumpDx || bottom - top < opts.chimneyHopUp) continue;
+		const from = { x: ledge.x, y: clamp(at.y, top, bottom) };
+		const to = { x: other.x, y: clamp(goal.y, top, bottom) };
+		if (Math.abs(to.y - from.y) >= opts.chimneyHopUp) out.push({ from, to: other, at: to, via: "chimney" });
+	}
+	return out;
+}
+
+/**
+ * Every way off this surface that depends only on the layout — which is all of them but the chimney
+ * kick above. Worked out once per surface per route and reused for every node on it; see the cache
+ * in findRoute.
+ */
+function transfersFrom(ledge: Ledge, goal: Vec2, ledges: Ledge[], opts: RouteOptions): Transfer[] {
 	const out: Transfer[] = [];
 
 	for (const other of ledges) {
@@ -525,7 +689,7 @@ function transfersFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts
 		// also skip the corner join for the same pair: doing that cut walls off from floors entirely
 		// and collapsed every route to a walk along the ground.
 		if (other.kind === "wall" && other !== ledge) {
-			const landing = pointOn(other, goal);
+			for (const landing of candidatesOn(other, ledges, goal)) {
 			// Pushing off from the point on *this* surface nearest the landing, not from wherever the
 			// mascot happens to be standing: the search prices the travel to a departure point, so this
 			// is what lets it walk along the floor to below the wall and jump from there. Without it a
@@ -543,8 +707,21 @@ function transfersFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts
 			// reach at the old bound.
 			const across = Math.abs(landing.x - from.x);
 			const reach = distance(from, landing);
+			// The same shape rule the floor-to-floor jump gets below, and it has to be here too now
+			// that `maxJumpTo` reaches across a window. `minJumpAcross` was tuned when the reach was
+			// 420px, which capped the *rise* at 345 as a side effect — with the reach at 1750 nothing
+			// bounded it any more, and the search found leaps of 962px straight up off a pane wall
+			// while travelling only 338px sideways. Cheap, legal, and pure levitation; worse, they
+			// crowded out the honest crossings this cap was raised for in the first place, because
+			// gaining a thousand pixels of height in one 57-tick leap beats everything.
+			if (!jumpShapeAllowed(across, Math.abs(landing.y - from.y), opts)) continue;
+			// Only wall-to-wall, which is the shape the detour actually takes: stepping onto a wall
+			// and sailing off it to another. Leaving a *floor* for a wall is how climbing starts and
+			// is never redundant, even when the wall's foot stands on the floor being left.
+			if (ledge.kind === "wall" && alreadyJoinedByFloor(ledges, from, landing)) continue;
 			if (across >= opts.minJumpAcross && reach <= opts.maxJumpTo && !jumpBlocked(ledges, from, landing, ledge, other)) {
 				out.push({ from, to: other, at: landing, via: "jump" });
+			}
 			}
 		}
 
@@ -596,18 +773,6 @@ function transfersFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts
 		// performed one hop at a time: callers execute only the route's first step and re-plan, so
 		// the mascot arrives on the far wall, re-plans, and kicks back. The alternation is not
 		// scripted anywhere — it falls out of the graph being symmetric.
-		if (ledge.kind === "wall" && other.kind === "wall" && faceEachOther(ledge, other)) {
-			const gap = Math.abs(other.x - ledge.x);
-			const top = Math.max(ledge.y1, other.y1);
-			const bottom = Math.min(ledge.y2, other.y2);
-			// Both walls have to exist at the same heights, with room to gain something by kicking.
-			if (gap >= opts.minChimneyGap && gap <= opts.maxJumpDx && bottom - top >= opts.chimneyHopUp) {
-				const from = { x: ledge.x, y: clamp(at.y, top, bottom) };
-				const to = { x: other.x, y: clamp(goal.y, top, bottom) };
-				if (Math.abs(to.y - from.y) >= opts.chimneyHopUp) out.push({ from, to: other, at: to, via: "chimney" });
-			}
-		}
-
 		// Jumps, from a floor only: a mascot pushes off something it is standing on. Bounded
 		// symmetrically (up or down) rather than "up is a jump, down is always a drop": a drop only
 		// ever lands straight below *the departing floor's own end* (see the drop transfer below), so
@@ -625,11 +790,44 @@ function transfersFrom(ledge: Ledge, at: Vec2, goal: Vec2, ledges: Ledge[], opts
 		// inventing a second constant, since there is no reason a jump should reach further downhill
 		// than up.
 		if (ledge.kind === "floor" && other.kind === "floor") {
-			const landing = pointOn(other, goal);
-			const dx = Math.abs(landing.x - at.x);
-			const up = ledge.y - other.y;
-			if (dx <= opts.maxJumpDx && Math.abs(up) <= opts.maxJumpUp) {
-				out.push({ from: at, to: other, at: landing, via: "jump" });
+			for (const landing of candidatesOn(other, ledges, goal)) {
+				// Departing from the point on this floor nearest the landing, like the wall jump above
+				// and for the same reason — the search already prices walking there. It also makes the
+				// whole transfer independent of where the mascot currently stands, which is what lets
+				// these be computed once per surface instead of once per node; `jumpBlocked` below is
+				// far too expensive to run per node.
+				const from = pointOn(ledge, landing);
+				// The same reach a jump onto a wall gets. These are the identical `Jumping` action —
+				// constant-speed motion toward a point — so capping one at 220px while the other
+				// reaches 1750 was an accident of the two being written at different times, and it is
+				// exactly what made a column of panes in the middle of the screen unusable: their top
+				// edges are the stepping stones across it, and nothing could reach from one to the next.
+				//
+				// Unlike the wall jump there is no `minJumpAcross` floor on it: that minimum exists to
+				// stop the search hitching up the slit between two panes in short vertical hops, and a
+				// floor-to-floor jump is horizontal by construction. Stepping across a 6px pane gap to
+				// the neighbouring floor is a legitimate and common move.
+				// Rising, this is shape-checked like the wall jump above and for the same reason:
+				// removing the old flat 220px bound let in a "jump" from the window floor 679px
+				// vertically up onto a pane top with no sideways travel at all.
+				//
+				// Descending, it keeps the short bound it always had, and deliberately. Going up needs
+				// a jump because gravity is against you; coming down has gravity on your side and two
+				// honest ballistic moves for it — `drop` off an edge and `hop` off one with a shove.
+				// A long descending `Jumping` is neither: it is constant-speed diagonal motion, which
+				// renders as gliding, and allowing it would make both of those unreachable.
+				//
+				// No `minJumpAcross` here, unlike a wall: that minimum stops the search hitching up the
+				// slit between two panes in short vertical hops, while stepping across a 6px pane gap
+				// to the floor alongside is both legitimate and common.
+				const step = ledge.y - other.y;
+				const shapeOk = step >= 0
+					? jumpShapeAllowed(Math.abs(landing.x - from.x), step, opts)
+					: -step <= opts.maxJumpUp;
+				if (!shapeOk) continue;
+				if (distance(from, landing) <= opts.maxJumpTo && !jumpBlocked(ledges, from, landing, ledge, other)) {
+					out.push({ from, to: other, at: landing, via: "jump" });
+				}
 			}
 		}
 	}
@@ -799,23 +997,37 @@ function arcAt(x0: number, y0: number, dir: number, t: number, opts: RouteOption
  * Sampled, like the arc check above, and for the same reason: the engine stops a mascot at whatever
  * it runs into, so a plan that ignores that is a plan it cannot carry out.
  */
+/**
+ * Whether a jump would pass through something on its way.
+ *
+ * Solved rather than sampled. `Jumping` is constant-speed motion toward a point (the real Jump.java
+ * port), so the path is a straight segment and "does it cross that wall" is a line crossing, not a
+ * question to answer by walking along it. The sampled version stepped every 8px, which cost
+ * `distance/8 * ledges` per call — fine while jumps reached 220px, and 5,000 operations apiece once
+ * they reached across the window. With a landing point offered at every interesting position on
+ * every surface this runs tens of thousands of times per route, and it was the whole of a 50x
+ * slowdown. Exact is both faster and more truthful: sampling could step clean over a surface the
+ * path only grazes.
+ */
 function jumpBlocked(ledges: Ledge[], from: Vec2, to: Vec2, leaving: Ledge, arriving: Ledge): boolean {
-	const steps = Math.max(1, Math.ceil(distance(from, to) / 8));
-	let prev = from;
-	for (let i = 1; i <= steps; i++) {
-		const at = { x: from.x + ((to.x - from.x) * i) / steps, y: from.y + ((to.y - from.y) * i) / steps };
-		const lo = Math.min(prev.x, at.x);
-		const hi = Math.max(prev.x, at.x);
-		for (const l of ledges) {
-			if (l === leaving || l === arriving) continue;
-			if (l.kind === "wall") {
-				if (l.x <= lo || l.x >= hi) continue;
-				if (at.y >= l.y1 && at.y <= l.y2) return true;
-			} else if (l.kind === "floor" && at.y > prev.y) {
-				if (l.y >= prev.y && l.y <= at.y && spansX(l, at.x)) return true;
-			}
+	const dx = to.x - from.x;
+	const dy = to.y - from.y;
+	const loX = Math.min(from.x, to.x);
+	const hiX = Math.max(from.x, to.x);
+	for (const l of ledges) {
+		if (l === leaving || l === arriving) continue;
+		if (l.kind === "wall") {
+			// Strictly between, so a wall standing exactly at the departure or the landing is not
+			// something the jump passes *through* — it is where it begins or ends.
+			if (l.x <= loX || l.x >= hiX) continue;
+			const y = from.y + (dy * (l.x - from.x)) / dx;
+			if (y >= l.y1 && y <= l.y2) return true;
+		} else if (l.kind === "floor" && dy > 0) {
+			// Only on the way down: a floor is solid from above and passed through from below, which
+			// is how a mascot leaves one at all.
+			if (l.y < from.y || l.y > to.y) continue;
+			if (spansX(l, dy === 0 ? from.x : from.x + (dx * (l.y - from.y)) / dy)) return true;
 		}
-		prev = at;
 	}
 	return false;
 }
@@ -940,19 +1152,26 @@ function withoutStandingStill(steps: RouteStep[], from: Vec2): RouteStep[] {
  * marginally suboptimal route is invisible where a slow one would not be.
  */
 /**
- * How far apart two arrivals on the same wall have to be to count as different places to have got
- * to.
+ * How far apart two arrivals on the same surface have to be to count as different places to have
+ * got to.
  *
- * Only walls are split this way, and that is the whole point: a surface is worth distinguishing by
- * *where* you land on it exactly when travelling along it is expensive, and climbing is 0.64px/tick
- * against walking's 8. On a floor, arriving at either end costs much the same, so one node is
- * honest; on a wall, arriving at the foot and arriving halfway up are minutes apart.
+ * This was once 200px and applied to walls only, on the reasoning that where you land matters
+ * exactly when travelling along the surface is expensive — climbing is 0.64px/tick against
+ * walking's 8, so arriving at a wall's foot and arriving halfway up are minutes apart, while either
+ * end of a floor costs much the same. True as far as it goes, and it is what first let a jump to
+ * the height actually wanted survive the search instead of being discarded in favour of stepping
+ * onto the wall's foot.
  *
- * Without this a wall remembered only its cheapest arrival — stepping onto its foot from the floor
- * beside it — so a jump straight to the height actually wanted was discarded during the search and
- * could never be chosen, however much climbing it saved.
+ * What it missed is that *cheap* is not *the same*. Two routes reaching one floor at opposite ends
+ * are two different things, and collapsing them to one node threw away whichever the search met
+ * second — so a jump to the far end of a floor could never be weighed against a walk to the near
+ * end, because only one of them was ever kept. That is a large part of why every mascot came out
+ * with the same route.
+ *
+ * Now every surface is split, and by the distance candidates are already thinned to, so it never
+ * merges two landing points that survived thinning.
  */
-const WALL_ARRIVAL_BUCKET_PX = 200;
+const ARRIVAL_BUCKET_PX = CANDIDATE_MERGE_PX;
 
 
 interface Node {
@@ -969,11 +1188,20 @@ export function findRoute(ledges: Ledge[], from: Vec2, target: Vec2, startLedge?
 
 	const index = new Map<Ledge, number>();
 	ledges.forEach((l, i) => index.set(l, i));
+	// A node is a *place*, not a surface. Keyed by where along the surface the route arrives, so two
+	// routes reaching the same floor at opposite ends are two different things the search can weigh
+	// against each other — which is the entire point of offering more than one landing point per
+	// surface (see candidatesOn). Keying by surface alone silently threw all of them away: whichever
+	// arrival happened to be cheapest became the only one, so a jump to the far end of a floor could
+	// never survive alongside a walk to the near end.
+	//
+	// Bucketed rather than exact, because arrivals computed different ways land a pixel or two apart
+	// and would otherwise multiply into near-identical nodes. The bucket matches the merge distance
+	// candidates are already thinned by, so it never merges two candidates that survived thinning.
 	const keyOf = (ledge: Ledge, at: Vec2): string =>
-		ledge.kind === "wall"
-			? `${index.get(ledge) ?? -1}@${Math.round(at.y / WALL_ARRIVAL_BUCKET_PX)}`
-			: `${index.get(ledge) ?? -1}`;
+		`${index.get(ledge) ?? -1}@${Math.round(alongOf(ledge, at) / ARRIVAL_BUCKET_PX)}`;
 
+	const transferCache = new Map<Ledge, Transfer[]>();
 	const visited = new Map<string, Node>();
 	const startKey = keyOf(start, from);
 	visited.set(startKey, { ledge: start, cost: 0, at: from });
@@ -989,7 +1217,16 @@ export function findRoute(ledges: Ledge[], from: Vec2, target: Vec2, startLedge?
 		const key = queue.splice(bestIdx, 1)[0];
 		const here = visited.get(key)!;
 
-		for (const transfer of transfersFrom(here.ledge, here.at, target, ledges, opts)) {
+		// Worked out once per surface, not once per node. Every transfer but the chimney kick is a
+		// property of the layout alone, and with a landing offered at every interesting position on
+		// every surface there are now many nodes per surface — recomputing the lot for each of them
+		// (jump-blocking sweeps included) was a 50x slowdown on its own.
+		let staticOut = transferCache.get(here.ledge);
+		if (!staticOut) {
+			staticOut = transfersFrom(here.ledge, target, ledges, opts);
+			transferCache.set(here.ledge, staticOut);
+		}
+		for (const transfer of [...staticOut, ...chimneysFrom(here.ledge, here.at, target, ledges, opts)]) {
 			const cost =
 				here.cost +
 				searchCost(alongVia(here.ledge), here.at, transfer.from, opts, here.ledge, ledges) +
