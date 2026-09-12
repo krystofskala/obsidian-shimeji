@@ -295,7 +295,15 @@ export class PoseFitCanvas {
 	}
 }
 
-function fitTransform(width: number, height: number): FrameTransform {
+/**
+ * Where an image sits when it is first loaded: scaled to fit the frame and centred in it.
+ *
+ * Exported for the one property that makes refitting trustworthy — an image already the frame's own
+ * size comes back at scale 1 and offset 0, so reopening a pose and saving it without touching
+ * anything writes back exactly what was there. Anything else and "have a look at it" would quietly
+ * be a destructive act.
+ */
+export function fitTransform(width: number, height: number): FrameTransform {
 	const scale = Math.max(MIN_SCALE, Math.min(POSE_FRAME_SIZE / width, POSE_FRAME_SIZE / height));
 	return {
 		scale,

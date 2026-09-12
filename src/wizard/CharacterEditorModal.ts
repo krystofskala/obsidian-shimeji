@@ -621,6 +621,17 @@ export class CharacterEditorModal extends Modal {
 		this.fitCanvas = new PoseFitCanvas(contentEl);
 		this.fitCanvas.setAnchors(entry.anchors);
 		void this.loadTemplateForFit(entry);
+		// Refitting starts from the pose the pack already has, which is the whole point of the word:
+		// you came here to nudge an existing image, not to find an empty frame and go looking for the
+		// file again. It loads as the *working* image — the pannable, zoomable one — so it can simply
+		// be dragged, and `fitTransform` places an already-fitted 128x128 pose exactly as it was
+		// saved, so opening and saving without touching anything is a no-op.
+		//
+		// Blank before this, and completely blank on a downloaded pack: the only thing ever loaded
+		// was the reference template, which comes from `referenceArtFolder()` — the *bundled*
+		// character's art, not the pack being edited. A pack with its own filenames has nothing at
+		// that path, so the canvas showed a checkerboard and nothing else.
+		if (this.doneImages.has(entry.image)) void this.loadPackImageIntoFit(entry.image);
 
 		const uploadRow = new Setting(contentEl)
 			.setName("Working image")
