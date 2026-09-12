@@ -110,6 +110,11 @@ type View = "name" | "confirmMigration" | "overview" | "fit" | "editAction" | "e
  * than taking a survey — and each one is an image decode while a modal is opening. */
 const POSE_FRAME_SAMPLES = 6;
 
+/** How long an anchor has to stay put before the move is committed to the character — see
+ * CharacterEditorModal.saveAnchor. Long enough to outlast a drag in progress, short enough that
+ * letting go and looking at a mascot shows the change. */
+const ANCHOR_COMMIT_DELAY_MS = 400;
+
 /** Packs are inconsistent about the leading slash on an image path, and an override that missed
  * because of one would look exactly like an override that does not work. Matches the same
  * normalisation mergeCustomContent applies when it puts these to use. */
@@ -169,6 +174,7 @@ export class CharacterEditorModal extends Modal {
 	}
 
 	onClose(): void {
+		this.flushAnchorCommit();
 		this.fitCanvas?.destroy();
 		this.contentEl.empty();
 		this.onDidClose?.();
@@ -623,7 +629,16 @@ export class CharacterEditorModal extends Modal {
 		this.render();
 	}
 
+	/** Commits an anchor drag that is still waiting to settle, so leaving the editor never loses it. */
+	private flushAnchorCommit(): void {
+		if (this.anchorCommitTimer === undefined) return;
+		window.clearTimeout(this.anchorCommitTimer);
+		this.anchorCommitTimer = undefined;
+		void this.commit();
+	}
+
 	private backToOverview(): void {
+		this.flushAnchorCommit();
 		this.fitCanvas?.destroy();
 		this.fitCanvas = undefined;
 		this.fittingEntry = undefined;
@@ -802,8 +817,18 @@ export class CharacterEditorModal extends Modal {
 	private async saveAnchor(image: string, anchor: Anchor): Promise<void> {
 		const rest = (this.content.poseAnchors ?? []).filter((a) => !sameImage(a.image, image));
 		this.content.poseAnchors = [...rest, { id: newSpecId(), image, x: anchor.x, y: anchor.y }];
-		await this.commit();
+		// Recorded at once, committed once the drag settles. commit() re-attaches every mascot on
+		// screen to its freshly merged character, and a drag reports every pointer movement — so
+		// committing each one reset every mascot's behaviour dozens of times a second for as long as
+		// the anchor was being moved.
+		if (this.anchorCommitTimer !== undefined) window.clearTimeout(this.anchorCommitTimer);
+		this.anchorCommitTimer = window.setTimeout(() => {
+			this.anchorCommitTimer = undefined;
+			void this.commit();
+		}, ANCHOR_COMMIT_DELAY_MS);
 	}
+
+	private anchorCommitTimer: number | undefined;
 
 	private async loadTemplateForFit(entry: PoseChecklistEntry): Promise<void> {
 		if (!this.fitCanvas) return;

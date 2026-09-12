@@ -1,4 +1,5 @@
 import { Events, type EventRef, FileSystemAdapter, MarkdownView, Menu, Notice, Platform, Plugin, TFile } from "obsidian";
+import { mapRenamedPacks, orphanedCustomContent, renamePackIds } from "./packRename";
 import type * as Transformers from "@huggingface/transformers";
 import { AiBackendChain } from "./ai/AiBackendChain";
 import { buildActiveNoteBlock } from "./ai/activeNoteContext";
@@ -83,6 +84,10 @@ const VAULT_EDIT_DEBOUNCE_MS = 1500;
 const SPOT_ORDER_CLICK_WINDOW_MS = 700;
 const SPOT_ORDER_CLICK_SLOP_PX = 24;
 const SPOT_ORDER_CLICKS = 3;
+
+/** How long the packs folder has to stay quiet before a change to it is acted on. A folder rename
+ * or a pack dropped in arrives as one event per file, so this has to outlast a burst of them. */
+const PACK_RESCAN_DEBOUNCE_MS = 1_500;
 
 export default class ShimejiPlugin extends Plugin {
 	/** What the mascots say. Purely an observer of the engine — see SpeechBubbles. */
@@ -584,6 +589,24 @@ export default class ShimejiPlugin extends Plugin {
 				this.vaultSearchIndex?.forget(file.path);
 			}),
 		);
+		// The packs folder, watched separately from the note events around it: these care about
+		// folders too, and about nothing else.
+		//
+		// Registered only once the layout is ready. Obsidian reports every existing file as a
+		// "create" while a vault first loads, to handlers registered before that, and a packs folder
+		// is thousands of sprites — that would have set off a second full scan on every cold start,
+		// and startup cost is exactly what cost this plugin mobile activation once before.
+		this.app.workspace.onLayoutReady(() => {
+			this.registerEvent(
+				this.app.vault.on("rename", (file, oldPath) => {
+					if (!this.isUnderPacksFolder(file.path) && !this.isUnderPacksFolder(oldPath)) return;
+					if (!(file instanceof TFile)) this.pendingFolderRenames.push([oldPath, file.path]);
+					this.schedulePackRescan();
+				}),
+			);
+			this.registerEvent(this.app.vault.on("create", (file) => this.isUnderPacksFolder(file.path) && this.schedulePackRescan()));
+			this.registerEvent(this.app.vault.on("delete", (file) => this.isUnderPacksFolder(file.path) && this.schedulePackRescan()));
+		});
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				if (!(file instanceof TFile)) return;
@@ -679,6 +702,7 @@ export default class ShimejiPlugin extends Plugin {
 	}
 
 	onunload(): void {
+		if (this.packRescanTimer !== undefined) window.clearTimeout(this.packRescanTimer);
 		cancelAnimationFrame(this.residencyRaf);
 		this.stopRoomOcclusion?.();
 		this.roomOcclusion.destroy();
@@ -815,24 +839,48 @@ export default class ShimejiPlugin extends Plugin {
 		return this.settings.referenceArtFolder.trim() || `${this.bundledPackFolder()}/img`;
 	}
 
-	async rescanPacks(): Promise<void> {
+	/**
+	 * @param quiet for a rescan the user did not ask for — one set off by a folder changing under the
+	 * packs folder — which should not greet them with a list of every character they own.
+	 */
+	async rescanPacks(opts: { quiet?: boolean } = {}): Promise<void> {
 		if (!this.settings.packsFolder) {
 			this.basePacks = [];
 			this.refreshAvailablePacks();
 			this.respawnWithCurrentSettings();
 			return;
 		}
+		// Where every character's sprites were before this scan, so a folder rename can be followed
+		// from each old id to its new one — see packRename.ts.
+		const before = this.basePacks.map((p) => ({ id: p.id, imgDir: p.imgDir }));
+		const folderRenames = this.pendingFolderRenames;
+		this.pendingFolderRenames = [];
 		try {
 			this.basePacks = await loadPacksFromFolder(this.app, this.settings.packsFolder);
 			if (this.basePacks.length === 0) {
 				new Notice("Shimeji: no actions.xml/behaviors.xml found in that folder yet — using the placeholder mascot.");
-			} else {
+			} else if (!opts.quiet) {
 				new Notice(`Shimeji: found ${this.basePacks.length} pack(s): ${this.basePacks.map((p) => p.name).join(", ")}`);
 			}
 		} catch (err) {
 			console.error("[obsidian-shimeji] failed to scan pack folder", err);
 			new Notice(`Shimeji: couldn't scan "${this.settings.packsFolder}" — check the pack folder path in settings (see the console for details).`);
 			this.basePacks = [];
+		}
+
+		// Before anything below drops ids it no longer finds: a renamed character keeps its place in
+		// the enabled list, its editor work, its speech and persona, under its new name. Applied to
+		// the mobile overrides as well as the effective settings, since a persona chosen on the phone
+		// is filed under the same id.
+		const renamed = mapRenamedPacks(before, this.basePacks.map((p) => ({ id: p.id, imgDir: p.imgDir })), folderRenames);
+		if (renamed.size > 0) {
+			renamePackIds(this.settings, renamed);
+			renamePackIds(this.storedSettings.mobileOverrides, renamed);
+			for (const mascot of this.stage?.getMascots() ?? []) {
+				const was = this.mascotPackId.get(mascot);
+				if (was && renamed.has(was)) this.mascotPackId.set(mascot, renamed.get(was)!);
+			}
+			console.info("[obsidian-shimeji] followed renamed character folders:", Object.fromEntries(renamed));
 		}
 
 		// Drop any selected pack ids the scan no longer finds, and auto-select everything found
@@ -846,7 +894,64 @@ export default class ShimejiPlugin extends Plugin {
 		await this.saveSettings();
 
 		this.refreshAvailablePacks();
+		// Every mascot on screen is put back into its character as the scan now describes it, not
+		// only the ones whose character vanished. respawnWithCurrentSettings alone leaves a mascot
+		// whose id is unchanged holding the pack object from *before* the scan — the old folder, and
+		// image paths already resolved against it — so after a folder was renamed or moved it kept
+		// its name and drew from a place that was no longer there. Reported as a character that
+		// "shows the right name but no image", and only a restart put it right.
+		for (const mascot of this.stage?.getMascots() ?? []) {
+			const id = this.mascotPackId.get(mascot) ?? null;
+			if (id !== null && this.availablePacks.some((p) => p.id === id)) this.attachActivePack(mascot, id);
+		}
 		this.respawnWithCurrentSettings();
+		this.reportOrphanedEdits();
+	}
+
+	/** Folder renames seen under the packs folder since the last scan, oldest first. */
+	private pendingFolderRenames: [string, string][] = [];
+	private packRescanTimer: number | undefined;
+
+	/**
+	 * Rescans shortly after anything under the packs folder changes.
+	 *
+	 * Nothing did before, so adding, removing or renaming a character's folder while Obsidian was
+	 * open left the plugin working from the layout it had at startup. Debounced because a folder
+	 * rename arrives as one event per file inside it, and a character is dozens of files.
+	 */
+	private schedulePackRescan(): void {
+		if (this.packRescanTimer !== undefined) window.clearTimeout(this.packRescanTimer);
+		this.packRescanTimer = window.setTimeout(() => {
+			this.packRescanTimer = undefined;
+			void this.rescanPacks({ quiet: true });
+		}, PACK_RESCAN_DEBOUNCE_MS);
+	}
+
+	/** Whether a vault path is inside the configured packs folder. */
+	private isUnderPacksFolder(path: string): boolean {
+		const root = this.settings.packsFolder.replace(/^\/+/, "").replace(/\/+$/, "");
+		return root !== "" && (path === root || path.startsWith(`${root}/`));
+	}
+
+	/** Editor work saved for characters whose folders are gone, said once per session. */
+	private reportedOrphans = new Set<string>();
+
+	/**
+	 * Says so when a character's editor work is filed under a name no folder has any more.
+	 *
+	 * Only a rename seen by Obsidian can be followed automatically; one made in the file manager
+	 * arrives as a deletion and an unrelated creation. This at least makes the loss visible instead
+	 * of leaving a character mysteriously without its art.
+	 */
+	private reportOrphanedEdits(): void {
+		const orphans = orphanedCustomContent(this.settings.customContent, this.basePacks.map((p) => p.id)).filter((id) => !this.reportedOrphans.has(id));
+		if (orphans.length === 0) return;
+		for (const id of orphans) this.reportedOrphans.add(id);
+		new Notice(
+			`Shimeji: saved character edits for ${orphans.map((o) => `"${o}"`).join(", ")} no longer match any character folder — ` +
+				"if you renamed one, its edits are still filed under the old name.",
+			12_000,
+		);
 	}
 
 	private refreshAvailablePacks(): void {

@@ -121,7 +121,7 @@ async function findConfFiles(app: App, confDir: string): Promise<{ actionsXml: s
 /** Whether `dir` holds sprite images directly, rather than folders of them or nothing. */
 async function hasSprites(app: App, dir: string): Promise<boolean> {
 	const listed = await app.vault.adapter.list(dir).catch(() => undefined);
-	return (listed?.files ?? []).some((f) => f.toLowerCase().endsWith(".png"));
+	return (listed?.files ?? []).some((f) => /\.(png|gif)$/i.test(f));
 }
 
 async function tryLoadCharacter(app: App, name: string, imgDir: string, confDir: string, root: string): Promise<MascotPack | null> {
