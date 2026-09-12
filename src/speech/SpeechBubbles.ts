@@ -203,7 +203,7 @@ export class SpeechBubbles {
 	 * Returns whether anything was actually said, so a caller with something of its own to fall back
 	 * on can tell silence-by-choice from silence-for-want-of-a-line.
 	 */
-	announceEvent(mascot: Mascot, triggerId: string, opts: SpeechOptions = DEFAULT_VAULT_REACTION_OPTIONS): boolean {
+	announceEvent(mascot: Mascot, triggerId: string, opts: SpeechOptions | undefined = DEFAULT_VAULT_REACTION_OPTIONS): boolean {
 		if (!this.enabled) return false;
 		const pool = this.poolFor(mascot);
 		if (pool.size === 0) return false;

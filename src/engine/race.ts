@@ -131,20 +131,36 @@ export type RaceSpeechTriggerId = (typeof RaceSpeechTrigger)[keyof typeof RaceSp
 export const RACE_SPEECH_TRIGGER_IDS: string[] = Object.values(RaceSpeechTrigger);
 
 /**
- * Pacing for race announcements, and the one place in this plugin where speech is deliberately not
- * throttled at all.
+ * Pacing for *calling out a placing*, and the one place in this plugin where speech is deliberately
+ * not throttled at all.
  *
  * Every other kind of remark is occasional by design — a behaviour changes every few seconds, a
  * vault event could fire on every keystroke — so the cooldowns exist to stop a running commentary.
- * A race is the opposite: it happens when you ask for it, each mascot has exactly one thing to say
- * about it, and "each of them calls out where it came" *is* the feature. Under the vault pacing's
+ * A placing is not that: it happens once per mascot per race, each of them has exactly one thing to
+ * say, and "every one of them announces where it came" *is* the feature. Under the vault pacing's
  * 15-second global gap, four of twenty would get a word in.
  *
- * It still writes to the shared event cooldown, so a mascot that has just shouted about a race will
- * not also remark on the next note you open for a little while. That is the right way round: it has
- * just spoken.
+ * Only the placings. `RaceStart` is ordinary flavour and takes ordinary pacing — see
+ * `isGuaranteed` — because twenty mascots shouting "Go!" in the same frame is not an announcement,
+ * it is a wall of speech bubbles.
+ *
+ * It still writes to the shared event cooldown, so a mascot that has just called out its placing
+ * will not also remark on the next note you open for a little while. That is the right way round:
+ * it has just spoken.
  */
 export const DEFAULT_RACE_SPEECH_OPTIONS: SpeechOptions = { chancePercent: 100, perMascotGapMs: 0, globalGapMs: 0 };
+
+/**
+ * Whether every entrant is supposed to say this, or only whoever the ordinary speech pacing lets.
+ *
+ * The line between the two is what the announcement is *for*. A placing is information — twenty
+ * mascots crossing a line over a minute, each reporting where it came — and information that only
+ * four of them deliver is not information. The start is atmosphere, and atmosphere is exactly what
+ * the cooldowns are for.
+ */
+export function isGuaranteed(triggerId: RaceSpeechTriggerId): boolean {
+	return triggerId !== RaceSpeechTrigger.start;
+}
 
 /** Which of the four a given placing earns. `place` is undefined for a mascot that never arrived. */
 export function raceTriggerFor(place: number | undefined, entrants: number): RaceSpeechTriggerId {
@@ -160,9 +176,10 @@ export function raceTriggerFor(place: number | undefined, entrants: number): Rac
  *
  * Both a trigger and a fallback, because the two answer different questions. The trigger lets the
  * user write what their character says; the fallback is what it says when they have not, and it is
- * the one that carries the actual placing ("4th!"), which no hand-written line can know.
+ * the one that carries the actual placing ("4th!"), which no hand-written line can know. Absent for
+ * announcements that are pure flavour and may simply not happen.
  */
-export type RaceAnnouncer = (racer: Racer, triggerId: RaceSpeechTriggerId, fallback: string) => void;
+export type RaceAnnouncer = (racer: Racer, triggerId: RaceSpeechTriggerId, fallback?: string) => void;
 
 export class Race {
 	private entrants: Racer[] = [];
@@ -186,7 +203,9 @@ export class Race {
 		this.entrants = [...entrants];
 		this.finished = [];
 		this.finishPoint = { x: finish.x, y: finish.y };
-		for (const racer of this.entrants) this.announce(racer, RaceSpeechTrigger.start, "Go!");
+		// No fallback text: with nothing written for @RaceStart, nothing is said. The built-in
+		// fallbacks exist so a placing is never lost, and there is no placing yet.
+		for (const racer of this.entrants) this.announce(racer, RaceSpeechTrigger.start);
 		return true;
 	}
 

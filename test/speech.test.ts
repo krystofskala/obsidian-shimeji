@@ -410,12 +410,12 @@ describe("SpeechScheduler", () => {
 			);
 		});
 
-		it("lets a whole field of racers each get a word in", () => {
+		it("lets a whole field of racers each call out its placing", () => {
 			// Why DEFAULT_RACE_SPEECH_OPTIONS exists at all. Every other kind of remark is occasional
-			// by design, so the cooldowns stop a running commentary. A race is the opposite: it
-			// happens when you ask for it, each mascot has exactly one thing to say, and each of them
-			// calling out where it came *is* the feature. Under the vault pacing's 15-second global
-			// gap, four of twenty would speak.
+			// by design, so the cooldowns stop a running commentary. A placing is not that: it happens
+			// once per mascot per race, and every one of them announcing where it came *is* the
+			// feature. Under the vault pacing's 15-second global gap, four of twenty would speak —
+			// which is the right answer for @RaceStart, and the wrong one here.
 			const { pool: racePool } = parseSpeechLines("Made it. @RaceFinished");
 			const vault = new SpeechScheduler(OPTS);
 			const race = new SpeechScheduler(OPTS);

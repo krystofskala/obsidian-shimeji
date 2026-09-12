@@ -7,7 +7,7 @@ import { BehaviorAI } from "../src/shimeji/BehaviorAI";
 import { Random } from "../src/engine/Random";
 import { computeLedgesFromRects } from "../src/engine/Ledges";
 import { mergeCustomContent } from "../src/shimeji/CustomContentBuilder";
-import { Race, RACE_MOOD_MAX_MS, RACE_MOOD_MIN_MS, RaceSpeechTrigger, moodForPlace, ordinal, placeAnnouncement, raceTriggerFor, type Racer } from "../src/engine/race";
+import { Race, RACE_MOOD_MAX_MS, RACE_MOOD_MIN_MS, RaceSpeechTrigger, isGuaranteed, moodForPlace, ordinal, placeAnnouncement, raceTriggerFor, type Racer } from "../src/engine/race";
 import type { Mood } from "../src/engine/mood";
 import { RACE_CELEBRATION_BEHAVIOR, RACE_DEFEAT_BEHAVIOR, buildRaceReactionsContent } from "../src/shimeji/raceReactions";
 import { DEFAULT_ENGINE_CONFIG, type Ledge } from "../src/engine/types";
@@ -58,7 +58,7 @@ type Stub = ReturnType<typeof racer>;
  * built-in fallback the plugin says when they have not.
  */
 function raceWith(entrants: Stub[], finish = { x: 0, y: 0 }) {
-	const said: { racer: Racer; trigger: string; text: string }[] = [];
+	const said: { racer: Racer; trigger: string; text?: string }[] = [];
 	const race = new Race((r, trigger, text) => said.push({ racer: r, trigger, text }));
 	race.start(entrants, finish);
 	/** One frame: whoever is flagged as arrived is offered to the race, then the race is ticked. */
@@ -193,7 +193,9 @@ describe("scoring a race", () => {
 		const [a, b] = [racer(), racer()];
 		const r = raceWith([a, b]);
 		expect(r.said.map((entry) => entry.trigger)).toEqual([RaceSpeechTrigger.start, RaceSpeechTrigger.start]);
-		expect(r.said.every((entry) => entry.text === "Go!")).toBe(true);
+		// No fallback text: @RaceStart is flavour, so with nothing written for it nothing is said,
+		// rather than twenty mascots shouting a built-in "Go!" in the same frame.
+		expect(r.said.every((entry) => entry.text === undefined)).toBe(true);
 	});
 
 	it("calls everyone who never arrived a loser, not only the worst of them", () => {
@@ -209,6 +211,33 @@ describe("scoring a race", () => {
 		expect(r.triggersFor(lost)).toEqual([RaceSpeechTrigger.start, RaceSpeechTrigger.lost]);
 		expect(r.triggersFor(alsoLost)).toEqual([RaceSpeechTrigger.start, RaceSpeechTrigger.lost]);
 		expect(alsoLost.started, "only one of them sulks about it").toEqual([]);
+	});
+
+	it("guarantees the placings and leaves the rest to ordinary pacing", () => {
+		// The line between the two is what the announcement is for. A placing is information — twenty
+		// mascots crossing over a minute, each reporting where it came — and information only four of
+		// them deliver is not information. The start is atmosphere, and atmosphere is what the
+		// cooldowns are for.
+		expect(isGuaranteed(RaceSpeechTrigger.win)).toBe(true);
+		expect(isGuaranteed(RaceSpeechTrigger.finished)).toBe(true);
+		expect(isGuaranteed(RaceSpeechTrigger.lost)).toBe(true);
+		expect(isGuaranteed(RaceSpeechTrigger.start)).toBe(false);
+	});
+
+	it("gives every placing a built-in line to fall back on, and the start none", () => {
+		// A placing must be announced whether or not anyone wrote a line for it, and the built-in is
+		// the only half that can carry the number. The start has nothing to report yet.
+		const [a, b, c] = [racer(), racer(), racer()];
+		const r = raceWith([a, b, c]);
+		for (const m of [a, b, c]) {
+			m.reached = true;
+			r.frame();
+			m.hasSpotOrder = false;
+		}
+		r.frame();
+		for (const entry of r.said) {
+			expect(entry.text === undefined, `${entry.trigger} fallback`).toBe(!isGuaranteed(entry.trigger as never));
+		}
 	});
 
 	it("maps a placing to a tag the same way whoever asks", () => {
