@@ -21,7 +21,11 @@ describe.skipIf(!HAVE_REAL).each([
 	["3gou3tpz", "pc_import_v1"],
 	["c1flwx3j", "legacy_default_v1"],
 ])("converting %s (%s)", (dir) => {
-	const p = load(dir);
+	// Only when the export is actually there. skipIf skips the tests, not this callback — vitest still
+	// runs it to collect them — so a bare `load(dir)` here read the file anyway and failed the whole
+	// file the moment the user removed these packs from their vault, which is exactly when the skip
+	// was supposed to take over.
+	const p = (HAVE_REAL && existsSync(`${PACKS}/${dir}/manifest.json`) ? load(dir) : undefined) as ReturnType<typeof load>;
 
 	it("defines the behaviours the engine looks up by name", () => {
 		for (const required of ["Fall", "Dragged", "Thrown", "ChaseMouse"]) {

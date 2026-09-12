@@ -1,4 +1,5 @@
 import { normalizePath, type App } from "obsidian";
+import { ACTIONS_FILE_NAMES, BEHAVIORS_FILE_NAMES, configKind, isJapaneseConfig, translateJapaneseConfig } from "./japaneseSchema";
 import { parseActionsXml } from "./ActionsParser";
 import { parseBehaviorsXml } from "./BehaviorsParser";
 import { artScaleFor, convertAppPack, type AppAnimationFile, type AppManifest } from "./appPack";
@@ -85,12 +86,48 @@ async function tryLoadAppCharacter(app: App, name: string, imgDir: string): Prom
 	};
 }
 
-async function tryLoadCharacter(app: App, name: string, imgDir: string, confDir: string, root: string): Promise<MascotPack | null> {
-	const actionsPath = `${confDir}/actions.xml`;
-	const behaviorsPath = `${confDir}/behaviors.xml`;
-	if (!(await existsFile(app, actionsPath)) || !(await existsFile(app, behaviorsPath))) return null;
-
+/**
+ * Finds the two halves of a config in `confDir`, whatever they are called.
+ *
+ * shimeji-ee's own names first, in its own order — which includes the Japanese `動作.xml` /
+ * `行動.xml` and the `one.xml` / `two.xml` plenty of re-packaged characters use. Failing that, every
+ * XML file in the folder is read and sorted by what it contains, which is what catches the Japanese
+ * names after a zip made on a non-Japanese system has turned them into mojibake.
+ */
+async function findConfFiles(app: App, confDir: string): Promise<{ actionsXml: string; behaviorsXml: string } | null> {
+	const firstExisting = async (names: string[]) => {
+		for (const n of names) if (await existsFile(app, `${confDir}/${n}`)) return `${confDir}/${n}`;
+		return undefined;
+	};
+	let actionsPath = await firstExisting(ACTIONS_FILE_NAMES);
+	let behaviorsPath = await firstExisting(BEHAVIORS_FILE_NAMES);
+	if (!actionsPath || !behaviorsPath) {
+		const listed = await app.vault.adapter.list(confDir).catch(() => undefined);
+		for (const file of listed?.files ?? []) {
+			if (!file.toLowerCase().endsWith(".xml") || file === actionsPath || file === behaviorsPath) continue;
+			const kind = configKind(await app.vault.adapter.read(file));
+			if (kind === "actions") actionsPath ??= file;
+			else if (kind === "behaviors") behaviorsPath ??= file;
+		}
+	}
+	if (!actionsPath || !behaviorsPath) return null;
 	const [actionsXml, behaviorsXml] = await Promise.all([app.vault.adapter.read(actionsPath), app.vault.adapter.read(behaviorsPath)]);
+	// Translated here, once, before anything reads them — the sound and image scans below included,
+	// which look for English attribute names in the raw text.
+	const english = (xml: string) => (isJapaneseConfig(xml) ? translateJapaneseConfig(xml) : xml);
+	return { actionsXml: english(actionsXml), behaviorsXml: english(behaviorsXml) };
+}
+
+/** Whether `dir` holds sprite images directly, rather than folders of them or nothing. */
+async function hasSprites(app: App, dir: string): Promise<boolean> {
+	const listed = await app.vault.adapter.list(dir).catch(() => undefined);
+	return (listed?.files ?? []).some((f) => f.toLowerCase().endsWith(".png"));
+}
+
+async function tryLoadCharacter(app: App, name: string, imgDir: string, confDir: string, root: string): Promise<MascotPack | null> {
+	const conf = await findConfFiles(app, confDir);
+	if (!conf) return null;
+	const { actionsXml, behaviorsXml } = conf;
 
 	// resolveImage runs on every pose tick (many times a second, for whatever pose is
 	// currently showing) — getResourcePath isn't guaranteed to return the exact same string on
@@ -265,6 +302,22 @@ export async function loadPacksFromFolder(app: App, root: string): Promise<Masco
 		if (nested) {
 			packs.push(...(await loadPacksFromFolder(app, `${root}/img/${name}`)));
 			continue;
+		}
+		// A whole single-character distribution dropped in as one folder: its own `conf/` beside an
+		// `img/` that holds the sprites directly. The original Japanese Shimeji was shipped exactly
+		// like this — Shimeji.exe, conf, img, lib — with the character's art in img/.
+		//
+		// Checked before the ordinary candidates because they get it wrong in a way that looks like
+		// loading: this folder's own conf was not recognised, the search fell through to the shared
+		// `conf/` at the top, and the character loaded with the bundled pack's behaviour and an
+		// imgDir one level above its sprites. It appeared in the list and showed nothing.
+		const distribution = `${root}/img/${name}`;
+		if ((await hasSprites(app, `${distribution}/img`)) && (await app.vault.adapter.exists(`${distribution}/conf`))) {
+			const loaded = await tryLoadCharacter(app, name, `${distribution}/img`, `${distribution}/conf`, distribution);
+			if (loaded) {
+				packs.push(loaded);
+				continue;
+			}
 		}
 		const confDirCandidates = [`${root}/img/${name}/conf`, `${root}/conf/${name}`, `${root}/conf`];
 		for (const confDir of confDirCandidates) {
