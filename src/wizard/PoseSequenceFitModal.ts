@@ -19,13 +19,18 @@ import {
 } from "../sprites/pixels";
 import { SpriteSheetModal } from "../sprites/SpriteSheetModal";
 
-/** Every other pose in a pack is authored at this size — see PoseFitCanvas's own POSE_FRAME_SIZE.
- * Not shared as one constant across files: that one governs an actual fixed composite frame, this
- * one is only ever a target to *suggest* scaling toward, a very different kind of use. */
-const REFERENCE_POSE_SIZE = 128;
+/** What to suggest scaling toward when the caller does not know what the pack is drawn at — the
+ * shimeji convention, and what the bundled pack uses. Only ever a suggestion here, unlike
+ * PoseFitCanvas's frame, which governs an actual composite and where getting it wrong rewrites the
+ * file. A caller that has measured the pack should say so: suggesting 128 to someone whose
+ * character is drawn at 64 is telling them to double it. */
+const DEFAULT_REFERENCE_POSE_HEIGHT = 128;
 
 export interface PoseSequenceFitModalOptions {
 	imgDir: string;
+	/** How tall this pack's own poses are, for the resize suggestion. Omitted means "unknown", which
+	 * falls back to the convention — see DEFAULT_REFERENCE_POSE_HEIGHT. */
+	referencePoseHeight?: number;
 	/** For the "add a layer on top" picker's "pick an existing image" option — the pack's own
 	 * images, same list every other picker in this wizard already offers from. Deliberately
 	 * unfiltered, unlike `sliceableImages` below: reusing an already-finished pose image directly
@@ -161,6 +166,11 @@ export class PoseSequenceFitModal extends Modal {
 	private frames: FrameState[] = [];
 	private index = 0;
 	private suggestedResizeFactor = 1;
+
+	/** The height poses in this pack actually are, or the convention when the caller did not say. */
+	private get referenceHeight(): number {
+		return this.opts.referencePoseHeight ?? DEFAULT_REFERENCE_POSE_HEIGHT;
+	}
 	private resizeFactor = 1;
 	private canvas!: HTMLCanvasElement;
 	private ctx!: CanvasRenderingContext2D;
@@ -202,7 +212,7 @@ export class PoseSequenceFitModal extends Modal {
 		}
 		this.frames = frames;
 		const tallest = Math.max(1, ...frames.map((f) => f.pixels.height));
-		this.suggestedResizeFactor = Math.round((REFERENCE_POSE_SIZE / tallest) * 100) / 100;
+		this.suggestedResizeFactor = Math.round((this.referenceHeight / tallest) * 100) / 100;
 		this.resizeFactor = this.suggestedResizeFactor;
 		this.render();
 	}
@@ -244,7 +254,7 @@ export class PoseSequenceFitModal extends Modal {
 		let factorInput: HTMLInputElement;
 		new Setting(contentEl)
 			.setName("Scale factor")
-			.setDesc(`Suggested: ${this.suggestedResizeFactor}x, so the tallest of these ${this.frames.length} frame(s) becomes about ${REFERENCE_POSE_SIZE}px tall.`)
+			.setDesc(`Suggested: ${this.suggestedResizeFactor}x, so the tallest of these ${this.frames.length} frame(s) becomes about ${this.referenceHeight}px tall.`)
 			.addText((t) => {
 				factorInput = t.inputEl;
 				t.setValue(String(this.resizeFactor)).onChange((v) => {

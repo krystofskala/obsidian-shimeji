@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { POSE_FRAME_SIZE, fitTransform } from "../src/wizard/PoseFitCanvas";
+import { DEFAULT_POSE_FRAME, fitTransform } from "../src/wizard/PoseFitCanvas";
 
 /**
  * Refitting an existing pose loads the pack's own image into the editor so it can be dragged — see
@@ -14,7 +14,7 @@ describe("where an image lands when the fit editor opens it", () => {
 	it("leaves a pose that is already frame-sized exactly as it was", () => {
 		// The property that makes "let me just look at it" safe: open a finished pose, save without
 		// touching anything, and the file is unchanged. Scale 1, no offset.
-		expect(fitTransform(POSE_FRAME_SIZE, POSE_FRAME_SIZE)).toEqual({ scale: 1, offsetX: 0, offsetY: 0 });
+		expect(fitTransform(DEFAULT_POSE_FRAME.width, DEFAULT_POSE_FRAME.height)).toEqual({ scale: 1, offsetX: 0, offsetY: 0 });
 	});
 
 	it("scales a larger image down to fit and centres it", () => {
@@ -37,6 +37,25 @@ describe("where an image lands when the fit editor opens it", () => {
 		expect(small.scale).toBe(2);
 		expect(small.offsetX).toBe(0);
 		expect(small.offsetY).toBe(0);
+	});
+
+	it("treats a pack drawn at its own size as the identity case too", () => {
+		// The point of measuring the pack rather than assuming 128. A character drawn at 64 used to be
+		// loaded at scale 2 and saved back doubled; one drawn 100x120 was padded to a square. Opening
+		// a finished pose has to be a no-op whatever the pack is drawn at, not only for packs that
+		// happen to follow the convention.
+		expect(fitTransform(64, 64, { width: 64, height: 64 })).toEqual({ scale: 1, offsetX: 0, offsetY: 0 });
+		expect(fitTransform(100, 120, { width: 100, height: 120 })).toEqual({ scale: 1, offsetX: 0, offsetY: 0 });
+		expect(fitTransform(256, 256, { width: 256, height: 256 })).toEqual({ scale: 1, offsetX: 0, offsetY: 0 });
+	});
+
+	it("fits to whichever side runs out first in a non-square frame", () => {
+		// A square source in a tall frame is limited by the width, and the leftover height is split
+		// above and below.
+		const tall = fitTransform(100, 100, { width: 100, height: 200 });
+		expect(tall.scale).toBe(1);
+		expect(tall.offsetX).toBe(0);
+		expect(tall.offsetY).toBe(50);
 	});
 
 	it("never scales to nothing, however lopsided the source", () => {

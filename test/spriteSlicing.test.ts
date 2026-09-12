@@ -816,3 +816,21 @@ describe("poseFileBaseName", () => {
 		expect(poseFileBaseName("   ", 0)).toBe("pose-1");
 	});
 });
+
+describe("compositeIntoFrame into a frame that is not square", () => {
+	it("produces the frame it was asked for, not a square", () => {
+		// Packs are not all drawn square, and the pose editor now composites into whatever size the
+		// pack's own art is. Forcing a square would pad a 2x3 character out to 3x3 on every save.
+		const source = { data: new Uint8ClampedArray(2 * 3 * 4).fill(255), width: 2, height: 3 };
+		const framed = compositeIntoFrame(source, { offsetX: 0, offsetY: 0, scale: 1 }, 2, 3);
+		expect(framed.width).toBe(2);
+		expect(framed.height).toBe(3);
+		expect([...framed.data]).toEqual([...source.data]);
+	});
+
+	it("still defaults to a square when only one dimension is given", () => {
+		// Every existing caller passes one number and means a square; that has to keep working.
+		const source = { data: new Uint8ClampedArray(4).fill(255), width: 1, height: 1 };
+		expect(compositeIntoFrame(source, { offsetX: 0, offsetY: 0, scale: 1 }, 3)).toMatchObject({ width: 3, height: 3 });
+	});
+});

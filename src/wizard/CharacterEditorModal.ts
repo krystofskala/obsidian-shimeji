@@ -26,7 +26,7 @@ import { describeActionHint } from "./actionHints";
 import { deriveAnimatedActions, findReferenceVelocity, type AnimatedActionChecklist } from "./animationOptions";
 import { deriveRequiredPoses, type PoseChecklist, type PoseChecklistEntry } from "./deriveRequiredPoses";
 import { imagesUsedByActions, imagesWorthSlicing } from "./imageCandidates";
-import { PoseFitCanvas } from "./PoseFitCanvas";
+import { DEFAULT_POSE_FRAME, PoseFitCanvas, type PoseFrame } from "./PoseFitCanvas";
 import { PoseFitModal } from "./PoseFitModal";
 import { PoseSequenceFitModal } from "./PoseSequenceFitModal";
 import { probeScaffoldPlan, scaffoldCharacter } from "./scaffoldCharacter";
@@ -105,17 +105,28 @@ type View = "name" | "confirmMigration" | "overview" | "fit" | "editAction" | "e
  * recomputed from `listPackImages` every time this opens, so closing and reopening mid-way just
  * works, and a pose fitted by hand-editing the pack folder directly counts too.
  */
+/** How many of a pack's finished poses to measure before deciding what size it is drawn at. Poses
+ * in one pack share a size or the pack would not animate, so this is reading a convention rather
+ * than taking a survey — and each one is an image decode while a modal is opening. */
+const POSE_FRAME_SAMPLES = 6;
+
 export class CharacterEditorModal extends Modal {
 	private view: View = "name";
 	private nameDraft = "";
 	private packId?: string;
 	private packName?: string;
 	private imgDir?: string;
+	/** Cached answer from prevailingPoseFrame — `null` for "measured, and there was nothing to go
+	 * on", so an empty pack does not re-decode on every pose. Cleared whenever the pack's images are
+	 * re-read, since importing art can change what the pack is drawn at. */
+	private measuredFrame?: PoseFrame | null;
 
 	private checklist?: PoseChecklist;
 	private animatedActions?: AnimatedActionChecklist;
 	private doneImages = new Set<string>();
 	private fittingEntry?: PoseChecklistEntry;
+	/** The frame the open fit editor is working at — see poseFrameFor. */
+	private fitFrame: PoseFrame = DEFAULT_POSE_FRAME;
 	private fitCanvas?: PoseFitCanvas;
 	/** Every image already in the pack's folder — backs the checklist's done state, the "pick an
 	 * already-uploaded image" pickers, the pose editor's image datalist, and the sheet-slicer's
@@ -304,6 +315,7 @@ export class CharacterEditorModal extends Modal {
 
 	private async refreshPackImages(): Promise<void> {
 		this.packImages = this.imgDir ? await listPackImages(this.app, this.imgDir) : [];
+		this.measuredFrame = undefined;
 		this.doneImages = new Set(this.packImages);
 	}
 
@@ -595,6 +607,10 @@ export class CharacterEditorModal extends Modal {
 	private async openFitEditor(entry: PoseChecklistEntry): Promise<void> {
 		this.fittingEntry = entry;
 		await this.refreshPackImages();
+		// Resolved before the canvas is built rather than loaded into it afterwards: the frame
+		// decides the canvas's own dimensions, so it is not something that can be changed later
+		// without rebuilding it.
+		this.fitFrame = await this.poseFrameFor(entry);
 		this.view = "fit";
 		this.render();
 	}
@@ -618,7 +634,7 @@ export class CharacterEditorModal extends Modal {
 			cls: "setting-item-description",
 		});
 
-		this.fitCanvas = new PoseFitCanvas(contentEl);
+		this.fitCanvas = new PoseFitCanvas(contentEl, this.fitFrame);
 		this.fitCanvas.setAnchors(entry.anchors);
 		void this.loadTemplateForFit(entry);
 		// Refitting starts from the pose the pack already has, which is the whole point of the word:
@@ -696,6 +712,65 @@ export class CharacterEditorModal extends Modal {
 	/** The optional translucent guide — see `ShimejiSettings.referenceArtFolder`'s own doc comment.
 	 * Same `shimeN.png` filename on both sides, so no per-pose mapping is needed: whatever is (or
 	 * isn't) sitting at that name in the reference folder is exactly what this slot shows. */
+	/**
+	 * The pose size this pack is actually drawn at, measured rather than assumed.
+	 *
+	 * 128x128 is the shimeji convention and the bundled pack follows it, but plenty of downloaded
+	 * packs do not, and the editor used to composite every save into a fixed 128 square. On a pack
+	 * drawn at 64 that silently doubled the art; on one drawn 100x120 it padded it to a square. Both
+	 * are destructive, and both happen to someone who opened a pose only to nudge it.
+	 *
+	 * Measured from the pack's own finished poses, and the specific pose being fitted wins outright
+	 * when it exists — that is the one whose size has to come back unchanged for refitting to be a
+	 * no-op. Only when fitting a slot the pack has nothing for does it fall back to the prevailing
+	 * size of its other poses, which is the best available guess at what the missing one should be.
+	 */
+	private async poseFrameFor(entry: PoseChecklistEntry): Promise<PoseFrame> {
+		if (this.doneImages.has(entry.image)) {
+			const own = await this.measurePackImage(entry.image);
+			if (own) return own;
+		}
+		return (await this.prevailingPoseFrame()) ?? DEFAULT_POSE_FRAME;
+	}
+
+	private async measurePackImage(image: string): Promise<PoseFrame | undefined> {
+		if (!this.imgDir) return undefined;
+		const decoded = await decodeVaultImage(this.app, packImagePath(this.imgDir, image));
+		if (!decoded) return undefined;
+		return { width: decoded.pixels.width, height: decoded.pixels.height };
+	}
+
+	/**
+	 * The size most of this pack's finished poses share.
+	 *
+	 * A handful is plenty: poses in one pack are the same size as each other or the pack would not
+	 * animate, so this is reading a convention, not taking a survey. Capped because each one is a
+	 * decode, and this runs while a modal is opening.
+	 *
+	 * Most common rather than first, so one odd file — a sprite sheet somebody dropped in, an
+	 * oversized spare — does not get to define the pack.
+	 */
+	private async prevailingPoseFrame(): Promise<PoseFrame | undefined> {
+		if (this.measuredFrame !== undefined) return this.measuredFrame ?? undefined;
+		const candidates = [...(this.checklist?.required ?? []), ...(this.checklist?.optional ?? [])]
+			.map((e) => e.image)
+			.filter((image) => this.doneImages.has(image))
+			.slice(0, POSE_FRAME_SAMPLES);
+		const tally = new Map<string, { frame: PoseFrame; n: number }>();
+		for (const image of candidates) {
+			const frame = await this.measurePackImage(image);
+			if (!frame) continue;
+			const key = `${frame.width}x${frame.height}`;
+			const seen = tally.get(key);
+			if (seen) seen.n++;
+			else tally.set(key, { frame, n: 1 });
+		}
+		let best: { frame: PoseFrame; n: number } | undefined;
+		for (const entry of tally.values()) if (!best || entry.n > best.n) best = entry;
+		this.measuredFrame = best?.frame ?? null;
+		return best?.frame;
+	}
+
 	private async loadTemplateForFit(entry: PoseChecklistEntry): Promise<void> {
 		if (!this.fitCanvas) return;
 		const path = normalizePath(`${this.plugin.referenceArtFolder()}${entry.image}`);
@@ -1087,12 +1162,21 @@ export class CharacterEditorModal extends Modal {
 			images: this.slicerCandidates(initialImage),
 			initialImage,
 			actionName: this.draftAction?.name ?? "pose",
-			onPoses: (poses) => {
+			onPoses: async (poses) => {
 				// Same finetune stop as the simple "Set frames…" flow — resize to match the rest of
 				// the character, flip/rotate, and place each frame's anchor one at a time before it
 				// joins this variant; see PoseSequenceFitModal's own doc comment.
+				//
+				// Async only so the pack can be measured first. Measuring eagerly on every image
+				// refresh would decode half a dozen files for every editor session, most of which
+				// never open this; measuring here costs the same decodes exactly once, and only for
+				// someone who is about to need the answer.
+				const measured = await this.prevailingPoseFrame();
 				new PoseSequenceFitModal(this.app, {
 					imgDir,
+					// Measured off this pack's own finished poses, so the resize suggestion aims at the
+					// size the character is actually drawn at instead of assuming the convention.
+					referencePoseHeight: measured?.height,
 					packImages: this.packImages,
 					sliceableImages: this.slicerCandidates(),
 					poses,

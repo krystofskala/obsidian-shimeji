@@ -3,7 +3,20 @@ import { pixelsToCanvas } from "../sprites/imageIo";
 import type { Anchor } from "./deriveRequiredPoses";
 
 /** Every pose in the standard schema is a 128x128 image — see README's "Using your own artwork". */
-export const POSE_FRAME_SIZE = 128;
+/**
+ * The size a pose is authored at when nothing better is known.
+ *
+ * 128x128 is the shimeji convention and what the bundled pack uses, but it is only a default now:
+ * the editor measures the pack it is actually editing and passes that in, because a pack drawn at
+ * any other size was being silently resampled to this one on save.
+ */
+export const DEFAULT_POSE_FRAME: PoseFrame = { width: 128, height: 128 };
+
+/** The pixel size of the pose slot being fitted — the pack's own, not an assumption about it. */
+export interface PoseFrame {
+	width: number;
+	height: number;
+}
 
 const DISPLAY_SCALE = 3;
 const CHECKER_SIZE = 8;
@@ -56,14 +69,14 @@ export class PoseFitCanvas {
 
 	private dragStart: { clientX: number; clientY: number; offsetX: number; offsetY: number } | null = null;
 
-	constructor(parentEl: HTMLElement) {
+	constructor(parentEl: HTMLElement, private frame: PoseFrame = DEFAULT_POSE_FRAME) {
 		this.wrapperEl = parentEl.createDiv({ cls: "shimeji-posefit" });
 		this.canvas = this.wrapperEl.createEl("canvas");
 		const ctx = this.canvas.getContext("2d");
 		if (!ctx) throw new Error("canvas 2D context unavailable");
 		this.ctx = ctx;
-		this.canvas.width = POSE_FRAME_SIZE * DISPLAY_SCALE;
-		this.canvas.height = POSE_FRAME_SIZE * DISPLAY_SCALE;
+		this.canvas.width = this.frame.width * DISPLAY_SCALE;
+		this.canvas.height = this.frame.height * DISPLAY_SCALE;
 		this.canvas.style.cursor = "grab";
 		this.canvas.style.touchAction = "none";
 
@@ -82,7 +95,7 @@ export class PoseFitCanvas {
 	 * scaled to fit the whole image inside the frame, centred, refined from there by panning/zooming. */
 	loadWorkingImage(pixels: Pixels): void {
 		this.working = { pixels, canvas: pixelsToCanvas(pixels), width: pixels.width, height: pixels.height };
-		this.transform = fitTransform(pixels.width, pixels.height);
+		this.transform = fitTransform(pixels.width, pixels.height, this.frame);
 		this.redraw();
 	}
 
@@ -119,7 +132,7 @@ export class PoseFitCanvas {
 		const pixels = transform(this.working.pixels);
 		const dimensionsChanged = pixels.width !== this.working.width || pixels.height !== this.working.height;
 		this.working = { pixels, canvas: pixelsToCanvas(pixels), width: pixels.width, height: pixels.height };
-		if (dimensionsChanged) this.transform = fitTransform(pixels.width, pixels.height);
+		if (dimensionsChanged) this.transform = fitTransform(pixels.width, pixels.height, this.frame);
 		this.redraw();
 	}
 
@@ -146,11 +159,11 @@ export class PoseFitCanvas {
 	}
 
 	zoomIn(): void {
-		this.zoomBy(ZOOM_STEP, POSE_FRAME_SIZE / 2, POSE_FRAME_SIZE / 2);
+		this.zoomBy(ZOOM_STEP, this.frame.width / 2, this.frame.height / 2);
 	}
 
 	zoomOut(): void {
-		this.zoomBy(1 / ZOOM_STEP, POSE_FRAME_SIZE / 2, POSE_FRAME_SIZE / 2);
+		this.zoomBy(1 / ZOOM_STEP, this.frame.width / 2, this.frame.height / 2);
 	}
 
 	/** The final composite, ready to encode and write — nearest-neighbor, not whatever smoothing
@@ -158,7 +171,7 @@ export class PoseFitCanvas {
 	 * with nothing loaded yet, so a caller can't accidentally save an empty frame. */
 	composite(): Pixels | null {
 		if (!this.working) return null;
-		return compositeIntoFrame(this.working.pixels, this.transform, POSE_FRAME_SIZE);
+		return compositeIntoFrame(this.working.pixels, this.transform, this.frame.width, this.frame.height);
 	}
 
 	hasWorkingImage(): boolean {
@@ -181,7 +194,7 @@ export class PoseFitCanvas {
 
 		if (this.template) {
 			this.ctx.globalAlpha = TEMPLATE_OPACITY;
-			this.ctx.drawImage(this.template, 0, 0, POSE_FRAME_SIZE * s, POSE_FRAME_SIZE * s);
+			this.ctx.drawImage(this.template, 0, 0, this.frame.width * s, this.frame.height * s);
 			this.ctx.globalAlpha = 1;
 		}
 
@@ -203,8 +216,8 @@ export class PoseFitCanvas {
 		const s = DISPLAY_SCALE;
 		const light = "#3a3a3a";
 		const dark = "#2a2a2a";
-		for (let y = 0; y < POSE_FRAME_SIZE; y += CHECKER_SIZE) {
-			for (let x = 0; x < POSE_FRAME_SIZE; x += CHECKER_SIZE) {
+		for (let y = 0; y < this.frame.height; y += CHECKER_SIZE) {
+			for (let x = 0; x < this.frame.width; x += CHECKER_SIZE) {
 				const even = (x / CHECKER_SIZE + y / CHECKER_SIZE) % 2 === 0;
 				this.ctx.fillStyle = even ? light : dark;
 				this.ctx.fillRect(x * s, y * s, CHECKER_SIZE * s, CHECKER_SIZE * s);
@@ -303,11 +316,11 @@ export class PoseFitCanvas {
  * anything writes back exactly what was there. Anything else and "have a look at it" would quietly
  * be a destructive act.
  */
-export function fitTransform(width: number, height: number): FrameTransform {
-	const scale = Math.max(MIN_SCALE, Math.min(POSE_FRAME_SIZE / width, POSE_FRAME_SIZE / height));
+export function fitTransform(width: number, height: number, frame: PoseFrame = DEFAULT_POSE_FRAME): FrameTransform {
+	const scale = Math.max(MIN_SCALE, Math.min(frame.width / width, frame.height / height));
 	return {
 		scale,
-		offsetX: (POSE_FRAME_SIZE - width * scale) / 2,
-		offsetY: (POSE_FRAME_SIZE - height * scale) / 2,
+		offsetX: (frame.width - width * scale) / 2,
+		offsetY: (frame.height - height * scale) / 2,
 	};
 }

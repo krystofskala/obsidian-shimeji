@@ -699,19 +699,23 @@ export interface FrameTransform {
  * (`cropPixels` included), and keeps this checkable against hand-built pixel patterns the way the
  * rest of the file's tests already are, rather than trusted because a scaled photo looks smooth.
  */
-export function compositeIntoFrame(source: Pixels, transform: FrameTransform, frameSize: number): Pixels {
-	const size = Math.max(1, Math.round(frameSize));
-	const out = new Uint8ClampedArray(size * size * 4);
+export function compositeIntoFrame(source: Pixels, transform: FrameTransform, frameWidth: number, frameHeight = frameWidth): Pixels {
+	// Height defaults to width, so every existing square caller reads exactly as it did. Packs are
+	// not all drawn square, though — the frame is whatever the pack's own poses are, and a square
+	// frame forced on a 100x120 character would pad it and change the file on save.
+	const w = Math.max(1, Math.round(frameWidth));
+	const h = Math.max(1, Math.round(frameHeight));
+	const out = new Uint8ClampedArray(w * h * 4);
 	const scale = transform.scale > 0 ? transform.scale : 1;
 
-	for (let ty = 0; ty < size; ty++) {
+	for (let ty = 0; ty < h; ty++) {
 		const sy = Math.floor((ty - transform.offsetY) / scale);
 		if (sy < 0 || sy >= source.height) continue;
-		for (let tx = 0; tx < size; tx++) {
+		for (let tx = 0; tx < w; tx++) {
 			const sx = Math.floor((tx - transform.offsetX) / scale);
 			if (sx < 0 || sx >= source.width) continue;
 			const from = (sy * source.width + sx) * 4;
-			const to = (ty * size + tx) * 4;
+			const to = (ty * w + tx) * 4;
 			out[to] = source.data[from];
 			out[to + 1] = source.data[from + 1];
 			out[to + 2] = source.data[from + 2];
@@ -719,7 +723,7 @@ export function compositeIntoFrame(source: Pixels, transform: FrameTransform, fr
 		}
 	}
 
-	return { data: out, width: size, height: size };
+	return { data: out, width: w, height: h };
 }
 
 /**
