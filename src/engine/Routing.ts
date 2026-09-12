@@ -840,7 +840,19 @@ function transfersFrom(ledge: Ledge, goal: Vec2, ledges: Ledge[], opts: RouteOpt
 			if (offX === undefined) continue;
 			const below = findFloorBelow(ledges, offX, ledge.y + 1);
 			if (!below) continue;
-			out.push({ from: { x: ledge[end], y: ledge.y }, to: below, at: pointOn(below, goal), via: "drop" });
+			// Landing directly under the edge stepped off, because that is where gravity puts it.
+			//
+			// This used to be recorded as `pointOn(below, goal)` — wherever on the floor below is
+			// nearest the target. The *cost* was right either way (it adds the sideways walk), but the
+			// arrival was a fiction, and once nodes were keyed by where a route arrives rather than
+			// merely by which surface, a fiction about arrival became a free teleport: "step off this
+			// edge" read as "and be 1386px along the floor below". Traced, a mascot with a target on
+			// its own floor walked away from it, climbed a wall, dropped, landed exactly where it had
+			// started and did the whole thing again for twelve thousand ticks.
+			//
+			// The walk that really follows is not lost — it is priced where every other surface
+			// crossing is, as travel along the floor to the next departure point.
+			out.push({ from: { x: ledge[end], y: ledge.y }, to: below, at: { x: clamp(offX, below.x1, below.x2), y: below.y }, via: "drop" });
 
 			// The same edge, taken with a shove. A drop lands directly below; a hop keeps its
 			// launch velocity for the whole flight, so where it lands has to be *solved* rather
@@ -1294,7 +1306,13 @@ function buildRoute(goalKey: string, visited: Map<string, Node>, from: Vec2, tar
 		const { transfer } = node.prev;
 		steps.unshift({ via: transfer.via, x: transfer.at.x, y: transfer.at.y, ledge: transfer.to });
 		const departure: Node = visited.get(node.prev.key)!;
-		if (distance(departure.at, transfer.from) > 0.5) {
+		// Far enough to be worth a leg of its own. 0.5px was right when a surface had one arrival
+		// point and any travel along it was real; with arrivals bucketed there are now landings a
+		// couple of pixels from the next departure, and emitting those produced legs like "climb 2px"
+		// — which the runner performs as a whole ClimbWall action, and which read from outside as a
+		// mascot twitching against a wall. Anything under the bucket's own half-width is inside the
+		// noise the bucketing introduced, and surface adherence closes it for free.
+		if (distance(departure.at, transfer.from) > ARRIVAL_BUCKET_PX / 2) {
 			steps.unshift({ via: alongVia(departure.ledge), x: transfer.from.x, y: transfer.from.y, ledge: departure.ledge });
 		}
 		node = departure;

@@ -62,13 +62,35 @@ function legs(start: { x: number; y: number }, route: ReturnType<typeof findRout
 }
 
 describe("jumping clear across the window", () => {
-	it("crosses most of the screen in one leap when that is genuinely the quickest way up", () => {
-		// Not a preference anyone coded: climbing runs at 0.64px/tick against a jump's 20, so kicking
-		// off one wall and catching the facing one beats climbing the wall you are already on by more
-		// than an order of magnitude. The router had that arithmetic all along; the cap hid it.
-		const route = findRoute(REAL, { x: 900, y: 1392 }, { x: 600, y: 300 }, FLOOR, OPTS);
-		const crossings = legs({ x: 900, y: 1392 }, route).filter((l) => l.via === "jump").map((l) => Math.abs(l.to.x - l.from.x));
-		expect(Math.max(0, ...crossings), "no long jump in " + spell(route)).toBeGreaterThan(600);
+	it("crosses most of the screen often, across the whole space of journeys", () => {
+		// Surveyed rather than asserted on one journey, and that is the point. An earlier version of
+		// this test demanded a >600px jump for one specific target, which passed only because that
+		// target happened to have one — and broke the moment the graph grew richer and a corridor
+		// climb became the honestly quicker answer *for that target*. A single journey cannot
+		// distinguish "the router can no longer produce long jumps", which is the complaint this
+		// exists for, from "this particular trip does not want one".
+		//
+		// Climbing runs at 0.64px/tick against a jump's 20, so kicking off one wall and catching the
+		// facing one beats climbing by more than an order of magnitude wherever the geometry allows
+		// it. Measured here: about a third of all journeys contain a leap of 800px or more.
+		let withLongCrossing = 0;
+		let total = 0;
+		let longest = 0;
+		for (let sx = 100; sx < 1700; sx += 150) {
+			for (let tx = 60; tx < 1720; tx += 140) {
+				for (const ty of [150, 300, 500, 700, 900, 1100]) {
+					const from = { x: sx, y: 1392 };
+					const route = findRoute(REAL, from, { x: tx, y: ty }, FLOOR, OPTS);
+					const crossings = legs(from, route).filter((l) => l.via === "jump").map((l) => Math.abs(l.to.x - l.from.x));
+					const best = Math.max(0, ...crossings);
+					longest = Math.max(longest, best);
+					if (best > 600) withLongCrossing++;
+					total++;
+				}
+			}
+		}
+		expect(longest, "no journey anywhere crosses most of the window").toBeGreaterThan(800);
+		expect(withLongCrossing / total, `only ${withLongCrossing} of ${total} journeys cross`).toBeGreaterThan(0.2);
 	});
 
 	it("does not leap merely because it can", () => {

@@ -117,10 +117,15 @@ describe("findRoute", () => {
 		const start = floorAt(ledges, 200)!;
 		const route = findRoute(ledges, { x: 452, y: 200 }, { x: 558, y: 212 }, start);
 
-		expect(route).toHaveLength(1);
-		expect(route[0].via).toBe("jump");
-		expect(route[0].x).toBeCloseTo(558, 0);
-		expect(route[0].y).toBeCloseTo(212, 0);
+		// One jump, and it lands on the neighbour. The mascot walks to its own floor's edge first,
+		// which is both what anything with legs does before leaping a gap and what lets the transfer
+		// be a property of the two surfaces rather than of wherever the mascot happens to be standing
+		// (see the departure point in transfersFrom, and the per-surface cache that depends on it).
+		const jumps = route.filter((s) => s.via === "jump");
+		expect(jumps).toHaveLength(1);
+		expect(jumps[0].x).toBeCloseTo(558, 0);
+		expect(jumps[0].y).toBeCloseTo(212, 0);
+		expect(route.every((s) => s.via === "walk" || s.via === "jump")).toBe(true);
 	});
 
 	it("will not jump further down than the jump budget allows", () => {
@@ -141,10 +146,15 @@ describe("findRoute", () => {
 		const paneTop = floorAt(ledges, 700)!;
 		const route = findRoute(ledges, { x: 600, y: 700 }, { x: 1100, y: 800 }, paneTop);
 
-		// Drop or hop: with the arc modelled honestly a hop off this edge comes down close to the
-		// target, so it wins — a better answer to the same question. What is asserted is that it
-		// gets *off* the raised floor at all, which is what used to fail.
-		expect(route.some((s) => s.via === "drop" || s.via === "hop")).toBe(true);
+		// Drop, hop or jump: whichever is quickest off this particular edge. What is asserted is that
+		// it gets *off* the raised floor and arrives, which is what used to fail. Naming the mechanism
+		// only invites the test to break every time a better one appears, which has now happened
+		// twice: first a hop beat the drop once the arc was modelled honestly, then a jump beat the
+		// hop once floor-to-floor jumps got the same reach as jumps onto a wall. Walking to the lip
+		// and leaping the last 200px lands on the target in 42 ticks where dropping and walking the
+		// rest takes 60.
+		expect(route.some((s) => s.via === "drop" || s.via === "hop" || s.via === "jump")).toBe(true);
+		expect(route[0].via, "left the raised floor without first walking to its edge").toBe("walk");
 		const last = route[route.length - 1];
 		expect(last.y).toBeCloseTo(800, 0);
 		expect(last.x).toBeCloseTo(1100, 0);
