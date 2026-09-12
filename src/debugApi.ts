@@ -174,9 +174,14 @@ export function installDebugApi(
 			if (mascots.length === 0) console.info("[obsidian-shimeji] no live mascots");
 			mascots.forEach((m, i) => {
 				const heat = m.angerHeatForDebug;
+				// Which of the three sources the mood is coming from is the question this listing
+				// exists to answer, and with an award outstanding the anger numbers alone cannot: a
+				// mascot can be sad about a race while its anger meter is cooling harmlessly.
+				const awarded = m.awardedMoodForDebug;
 				console.info(`[obsidian-shimeji] mascot#${i}`, {
 					mood: m.mood,
 					speedMultiplier: m.moodSpeedMultiplier,
+					awarded: awarded ? `${awarded.mood} for ${Math.ceil(awarded.msLeft / 1000)}s more` : "-",
 					angerHeat: Math.round(heat * 100) / 100,
 					angerThreshold: ANGER_THRESHOLD,
 					secondsUntilCalm: heat >= ANGER_THRESHOLD ? Math.ceil((heat - ANGER_THRESHOLD) / ANGER_DECAY_PER_SECOND) : 0,

@@ -1,3 +1,4 @@
+import type { Mood } from "./mood";
 import { RACE_CELEBRATION_BEHAVIOR, RACE_DEFEAT_BEHAVIOR } from "../shimeji/raceReactions";
 import type { Vec2 } from "./types";
 
@@ -32,6 +33,8 @@ export interface Racer {
 	/** Read-once; true on the tick an order completed by arriving. See BehaviorAI's own comment. */
 	consumeJustReachedSpot(): boolean;
 	startNamedBehavior(name: string): void;
+	/** Puts the mascot in a mood for a while — see Mascot.awardMood. */
+	awardMood(mood: Mood, ms: number): void;
 }
 
 /**
@@ -52,6 +55,50 @@ export function ordinal(n: number): string {
 	if (tens >= 11 && tens <= 13) return `${n}th`;
 	// Indices 4-9 fall off the end of the table, which is exactly the "th" case.
 	return `${n}${["th", "st", "nd", "rd"][n % 10] ?? "th"}`;
+}
+
+/**
+ * Shortest and longest a race result stays with a mascot. The winner and the straggler get the long
+ * end; the pair either side of halfway get the short one.
+ *
+ * Two minutes is deliberately longer than a race usually takes, so the mood outlives the event that
+ * caused it and you can still see who won by how they are moving. Twenty seconds is about the least
+ * that reads as a mood rather than a flicker.
+ */
+export const RACE_MOOD_MIN_MS = 20_000;
+export const RACE_MOOD_MAX_MS = 120_000;
+
+/**
+ * What finishing in a given place does to a mascot, and for how long.
+ *
+ * The top half is pleased and the bottom half is not, with the intensity running outward from the
+ * middle in both directions: first place is the happiest for the longest, last place the saddest for
+ * the longest, and whoever finished either side of halfway barely registers it. That shape is the
+ * request — "happy for the first half, longest for 1st; the second half bored through to sad, the
+ * last one sad for longest" — and it falls out of one number, how far from the middle of the field
+ * you came.
+ *
+ * The bottom half splits again rather than everyone in it being equally glum: "bored" is the first
+ * part of it and "sad" the rest, which puts the bottom quarter of the field in genuine gloom. Of
+ * twenty, places 11-15 are bored and 16-20 sad.
+ *
+ * Note what this does *not* depend on: the clock. Two mascots that cross a second apart get very
+ * different moods if the field is small and near-identical ones if it is large, because a placing is
+ * the only thing a race actually measures. A time-based version would need a notion of what a good
+ * time is, which depends on the layout, the character's speed and where each of them started.
+ */
+export function moodForPlace(place: number, entrants: number): { mood: Mood; ms: number } {
+	const half = Math.ceil(entrants / 2);
+	// How far out toward an extreme of the field this place is: 1 at either end, 0 next to the
+	// middle. `span <= 1` is the one-mascot-in-this-half case, which is an extreme by default rather
+	// than a division by zero.
+	const extremity = (offset: number, span: number): number => (span <= 1 ? 1 : offset / (span - 1));
+	const ms = (out: number): number => RACE_MOOD_MIN_MS + (RACE_MOOD_MAX_MS - RACE_MOOD_MIN_MS) * out;
+
+	if (place <= half) return { mood: "happy", ms: ms(extremity(half - place, half)) };
+
+	const gloom = extremity(place - half - 1, entrants - half);
+	return { mood: gloom >= 0.5 ? "sad" : "bored", ms: ms(gloom) };
 }
 
 /** What the caller does with a finish — announcing it is somebody else's job, because speech has its
@@ -109,6 +156,11 @@ export class Race {
 		this.finished.push(racer);
 		const place = this.finished.length;
 		this.announce(racer, placeAnnouncement(place, this.entrants.length));
+		// Straight away rather than at the end of the race: which half a place falls in depends only
+		// on how many set off, which was known before anyone moved. Waiting would mean the winner
+		// finished its celebration jumps before it was allowed to be pleased about them.
+		const { mood, ms } = moodForPlace(place, this.entrants.length);
+		racer.awardMood(mood, ms);
 		if (place === 1) racer.startNamedBehavior(RACE_CELEBRATION_BEHAVIOR);
 		return true;
 	}
@@ -137,6 +189,11 @@ export class Race {
 		// home. If some never arrived, the sad one is whoever ended up furthest from the finish —
 		// which is fairer than "the last to finish" when the last to finish did at least finish.
 		const stranded = this.entrants.filter((racer) => !this.finished.includes(racer));
+		// Nobody who never arrived has a placing, so they are all treated as having come last: the
+		// saddest mood for the longest. They are, after all, still out there.
+		const last = moodForPlace(this.entrants.length, this.entrants.length);
+		for (const racer of stranded) racer.awardMood(last.mood, last.ms);
+
 		const loser = stranded.length > 0 ? this.furthestFromFinish(stranded) : this.finished[this.finished.length - 1];
 		if (loser) {
 			if (stranded.includes(loser)) this.announce(loser, "I never even got there...");

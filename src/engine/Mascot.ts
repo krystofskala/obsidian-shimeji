@@ -326,6 +326,17 @@ export class Mascot {
 	 * setting. */
 	private angerHeat = 0;
 
+	/**
+	 * A mood this particular mascot *earned*, held for a while and then let go of — finishing a race
+	 * is the first thing that hands one out (see engine/race.ts).
+	 *
+	 * Counted down in simulate() rather than against the wall clock, exactly as the anger meter is,
+	 * so it stops while the engine is stopped. A mood measured against Date.now() would quietly
+	 * expire while Obsidian sat in the background and the mascot never moved, which is the opposite
+	 * of what "sulk for two minutes" means.
+	 */
+	private awardedMood?: { mood: Mood; msLeft: number };
+
 	private driver?: MascotDriver;
 	private walk?: WalkState;
 	private climbDirection: "up" | "down" = "up";
@@ -740,12 +751,34 @@ export class Mascot {
 		return this.isDragging && this.dragUpsideDown;
 	}
 
+	/**
+	 * Puts this mascot in a mood for a while, outranking the ambient baseline but not anger.
+	 *
+	 * Anger stays on top deliberately: it comes from the user picking this mascot up and throwing it
+	 * about, twice in quick succession, which is a more immediate thing to have happened than how a
+	 * race went. A winner that gets thrown should be cross about it.
+	 *
+	 * A later award replaces an earlier one outright rather than queueing or taking the longer of the
+	 * two — the most recent thing that happened is the one the mascot is reacting to.
+	 */
+	awardMood(mood: Mood, ms: number): void {
+		if (ms <= 0) return;
+		this.awardedMood = { mood, msLeft: ms };
+	}
+
+	/** What was awarded and how much of it is left, for the debug listing. Ungated by moodEnabled,
+	 * matching angerHeatForDebug and for the same reason. */
+	get awardedMoodForDebug(): { mood: Mood; msLeft: number } | undefined {
+		return this.awardedMood ? { ...this.awardedMood } : undefined;
+	}
+
 	/** Invented — see engine/mood.ts. "normal" (multiplier 1, no bias) whenever moodEnabled is off
 	 * or there's no ambient signal, rather than gating every call site that reads
 	 * moodSpeedMultiplier individually. Exposed for the debug API and tests. */
 	get mood(): Mood {
 		if (!this.deps.config.moodEnabled) return "normal";
 		if (this.angerHeat >= ANGER_THRESHOLD) return "angry";
+		if (this.awardedMood) return this.awardedMood.mood;
 		const msSinceVaultActivity = this.deps.getMsSinceVaultActivity?.();
 		return msSinceVaultActivity === undefined ? "normal" : ambientMood(msSinceVaultActivity);
 	}
@@ -834,6 +867,10 @@ export class Mascot {
 			this.stillMs += dtSeconds * 1000;
 		}
 		this.angerHeat = decayAnger(this.angerHeat, dtSeconds);
+		if (this.awardedMood) {
+			this.awardedMood.msLeft -= dtSeconds * 1000;
+			if (this.awardedMood.msLeft <= 0) this.awardedMood = undefined;
+		}
 		const ambient = this.deps.getAmbientPointer();
 
 		if (this.isDragging) {

@@ -7,7 +7,8 @@ import { BehaviorAI } from "../src/shimeji/BehaviorAI";
 import { Random } from "../src/engine/Random";
 import { computeLedgesFromRects } from "../src/engine/Ledges";
 import { mergeCustomContent } from "../src/shimeji/CustomContentBuilder";
-import { Race, ordinal, placeAnnouncement, type Racer } from "../src/engine/race";
+import { Race, RACE_MOOD_MAX_MS, RACE_MOOD_MIN_MS, moodForPlace, ordinal, placeAnnouncement, type Racer } from "../src/engine/race";
+import type { Mood } from "../src/engine/mood";
 import { RACE_CELEBRATION_BEHAVIOR, RACE_DEFEAT_BEHAVIOR, buildRaceReactionsContent } from "../src/shimeji/raceReactions";
 import { DEFAULT_ENGINE_CONFIG, type Ledge } from "../src/engine/types";
 import type { Mascot } from "../src/engine/Mascot";
@@ -24,14 +25,16 @@ import type { MascotPack } from "../src/shimeji/types";
 
 // ---- the scoring ------------------------------------------------------------
 
-/** A stand-in racer: no pack, no physics, just the four things a race reads. */
+/** A stand-in racer: no pack, no real physics, just the handful of things a race reads. */
 function racer(x = 0, y = 0) {
 	const started: string[] = [];
+	const moods: { mood: Mood; ms: number }[] = [];
 	return {
 		physics: { x, y },
 		hasSpotOrder: true,
 		reached: false,
 		started,
+		moods,
 		consumeJustReachedSpot() {
 			const was = this.reached;
 			this.reached = false;
@@ -39,6 +42,9 @@ function racer(x = 0, y = 0) {
 		},
 		startNamedBehavior(name: string) {
 			started.push(name);
+		},
+		awardMood(mood: Mood, ms: number) {
+			moods.push({ mood, ms });
 		},
 	};
 }
@@ -165,6 +171,85 @@ describe("scoring a race", () => {
 		expect(placeAnnouncement(1, 20)).toBe("First!");
 		expect(placeAnnouncement(12, 20)).toBe("12th!");
 		expect(placeAnnouncement(20, 20)).toBe("Last... 20th");
+	});
+});
+
+describe("what a placing does to a mood", () => {
+	/** The whole field's worth of results, which is the only way to see the shape. */
+	const field = (n: number) => Array.from({ length: n }, (_, i) => moodForPlace(i + 1, n));
+
+	it("is happy for the top half and not for the bottom", () => {
+		const moods = field(20).map((r) => r.mood);
+		expect(moods.slice(0, 10).every((m) => m === "happy")).toBe(true);
+		expect(moods.slice(10).every((m) => m === "happy")).toBe(false);
+	});
+
+	it("runs the bottom half from bored through to sad", () => {
+		// The request in as many words: the second half gets bored through to sad, the last one sad.
+		// The bottom quarter of the field ends up genuinely gloomy.
+		expect(field(20).map((r) => r.mood).slice(10)).toEqual([
+			"bored", "bored", "bored", "bored", "bored", "sad", "sad", "sad", "sad", "sad",
+		]);
+	});
+
+	it("holds it longest at either end and shortest around the middle", () => {
+		const ms = field(20).map((r) => r.ms);
+		expect(ms[0]).toBe(RACE_MOOD_MAX_MS);
+		expect(ms[19]).toBe(RACE_MOOD_MAX_MS);
+		// Falling all the way down to the halfway mark, then climbing again — the V that makes first
+		// and last the two placings anyone can pick out from across the room.
+		for (let i = 1; i < 10; i++) expect(ms[i], `place ${i + 1}`).toBeLessThan(ms[i - 1]);
+		for (let i = 11; i < 20; i++) expect(ms[i], `place ${i + 1}`).toBeGreaterThan(ms[i - 1]);
+		expect(Math.min(...ms)).toBe(RACE_MOOD_MIN_MS);
+	});
+
+	it("works for the small fields that actually happen", () => {
+		// Two mascots is the commonest race there is, and the one where an off-by-one in the halving
+		// would put the winner in the bottom half.
+		expect(field(2)).toEqual([
+			{ mood: "happy", ms: RACE_MOOD_MAX_MS },
+			{ mood: "sad", ms: RACE_MOOD_MAX_MS },
+		]);
+		// An odd field gives the extra place to the happy half — better to be generous about it than
+		// to make the median mascot sad.
+		expect(field(3).map((r) => r.mood)).toEqual(["happy", "happy", "sad"]);
+		expect(field(5).map((r) => r.mood)).toEqual(["happy", "happy", "happy", "bored", "sad"]);
+	});
+
+	it("never hands out a mood nobody asked for", () => {
+		for (let n = 2; n <= 40; n++) {
+			for (const { mood, ms } of field(n)) {
+				expect(["happy", "bored", "sad"]).toContain(mood);
+				expect(ms).toBeGreaterThanOrEqual(RACE_MOOD_MIN_MS);
+				expect(ms).toBeLessThanOrEqual(RACE_MOOD_MAX_MS);
+			}
+		}
+	});
+
+	it("puts each finisher in its mood as it crosses, not once the race is over", () => {
+		// Which half a place falls in depends only on how many set off, which was known before anyone
+		// moved. Waiting would mean the winner finished its celebration jumps before it was allowed
+		// to be pleased about them.
+		const [a, b] = [racer(), racer()];
+		const r = raceWith([a, b]);
+		a.reached = true;
+		r.frame();
+		expect(a.moods).toEqual([{ mood: "happy", ms: RACE_MOOD_MAX_MS }]);
+		expect(b.moods).toEqual([]);
+	});
+
+	it("treats everyone who never arrived as having come last", () => {
+		// No placing to go on, and they are still out there — which is as far behind as it gets.
+		const winner = racer(0, 0);
+		const [lost, alsoLost] = [racer(900, 0), racer(500, 0)];
+		const r = raceWith([winner, lost, alsoLost], { x: 0, y: 0 });
+		winner.reached = true;
+		r.frame();
+		winner.hasSpotOrder = false;
+		lost.hasSpotOrder = false;
+		alsoLost.hasSpotOrder = false;
+		r.frame();
+		for (const m of [lost, alsoLost]) expect(m.moods, "a stranded mascot").toEqual([{ mood: "sad", ms: RACE_MOOD_MAX_MS }]);
 	});
 });
 

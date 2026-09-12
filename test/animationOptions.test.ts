@@ -60,22 +60,22 @@ describe("poseDefToCustomPoseSpec", () => {
 describe("moodsPlayedIn / toggleOptionMood", () => {
 	it("reads a stored empty list as playing in every mood", () => {
 		// The crux of the picker's readability: stored "[]" means any mood, so the honest thing to
-		// show is all four lit, not none.
-		expect(moodsPlayedIn([])).toEqual(["happy", "normal", "bored", "angry"]);
+		// show is every mood lit, not none.
+		expect(moodsPlayedIn([])).toEqual(["happy", "normal", "bored", "angry", "sad"]);
 	});
 
 	it("keeps a restriction in a stable order regardless of how it was clicked together", () => {
 		expect(moodsPlayedIn(["angry", "happy"])).toEqual(["happy", "angry"]);
 	});
 
-	it("turning one off from the default restricts to the other three", () => {
-		expect(toggleOptionMood([], "angry")).toEqual(["happy", "normal", "bored"]);
+	it("turning one off from the default restricts to the rest", () => {
+		expect(toggleOptionMood([], "angry")).toEqual(["happy", "normal", "bored", "sad"]);
 	});
 
-	it("turning the last missing one back on normalises to 'any mood' rather than listing all four", () => {
+	it("turning the last missing one back on normalises to 'any mood' rather than listing every one", () => {
 		// One representation of "plays everywhere" on disk, and it is the same one every pack
 		// written before moods existed already has.
-		expect(toggleOptionMood(["happy", "normal", "bored"], "angry")).toEqual([]);
+		expect(toggleOptionMood(["happy", "normal", "bored", "sad"], "angry")).toEqual([]);
 	});
 
 	it("round-trips: off then on again is the value it started at", () => {

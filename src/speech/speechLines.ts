@@ -188,8 +188,15 @@ export function speechLinesTemplate(behaviorNames: string[]): string {
 		"",
 	];
 
-	const section = (heading: string, lines: Array<[string, string]>): void => {
-		const usable = lines.filter(([, tag]) => has(tag));
+	/**
+	 * @param filtered whether to drop lines whose tag this character has no behaviour for. True for
+	 * behaviour tags, since a pack that names things oddly should not be handed examples that can
+	 * never fire. False for the invented namespaced tags (`mood:`, `note:`), which are legal on every
+	 * character regardless of what its pack contains — `has` only knows about behaviour names and
+	 * would throw every one of them away.
+	 */
+	const section = (heading: string, lines: Array<[string, string]>, filtered = true): void => {
+		const usable = filtered ? lines.filter(([, tag]) => has(tag)) : lines;
 		if (usable.length === 0) return;
 		out.push(`## ${heading}`, "");
 		for (const [text, tag] of usable) out.push(`${text} @${tag}`);
@@ -208,6 +215,19 @@ export function speechLinesTemplate(behaviorNames: string[]): string {
 		["Think I'll sit here a while.", "SitDown"],
 		["Wait for me!", "ChaseMouse"],
 	]);
+	// Unfiltered: these are moods, not behaviours. A mood is announced on the tick it *changes*, so
+	// these are what a mascot says about how a race went once the placing itself is old news — see
+	// engine/race.ts's moodForPlace for which placings land where.
+	section(
+		"How the race went",
+		[
+			["Nobody even close.", "mood:happy"],
+			["Still got it.", "mood:happy"],
+			["Could have gone better.", "mood:bored"],
+			["I am never going to live this down.", "mood:sad"],
+		],
+		false,
+	);
 
 	return out.join("\n");
 }

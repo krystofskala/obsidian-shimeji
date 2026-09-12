@@ -164,8 +164,11 @@ describe("speechLinesTemplate", () => {
 		const parsed = parseSpeechLines(speechLinesTemplate(["Fall", "Dragged", "Thrown", "SitDown", "Walk", "ChaseMouse"]));
 		expect(parsed.untaggedLines).toEqual([]);
 		expect(parsed.taggedLineCount).toBeGreaterThan(0);
-		// Every tag it produced is a real behaviour name, not a fragment of the prose around it.
-		expect(unmatchedTags(parsed.pool, ["Fall", "Dragged", "Thrown", "SitDown", "Walk", "ChaseMouse"])).toEqual([]);
+		// Every tag it produced is a real one, not a fragment of the prose around it. Checked against
+		// behaviour names *and* the mood ids, because that is the pair the real caller hands to
+		// unmatchedTags (main.ts's allLegalSpeechTags) — the template's race examples are tagged with
+		// moods, which are legal on every character and are not behaviour names.
+		expect(unmatchedTags(parsed.pool, ["Fall", "Dragged", "Thrown", "SitDown", "Walk", "ChaseMouse", ...MOOD_TRIGGER_IDS])).toEqual([]);
 	});
 
 	it("still writes usable lines when no character is loaded yet", () => {
@@ -480,7 +483,7 @@ describe("resolveSpeechPool", () => {
 
 describe("mood speech tags", () => {
 	it("namespaces every mood so it cannot be mistaken for a behaviour name", () => {
-		expect(MOOD_TRIGGER_IDS).toEqual(["mood:happy", "mood:normal", "mood:bored", "mood:angry"]);
+		expect(MOOD_TRIGGER_IDS).toEqual(["mood:happy", "mood:normal", "mood:bored", "mood:angry", "mood:sad"]);
 		expect(MOODS.map(moodTriggerId)).toEqual(MOOD_TRIGGER_IDS);
 	});
 

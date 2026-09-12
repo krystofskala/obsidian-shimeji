@@ -6,12 +6,12 @@
  * named-behavior selection would need guessing at pack-specific names and silently do nothing on
  * a pack that names things oddly.
  */
-export type Mood = "happy" | "normal" | "bored" | "angry";
+export type Mood = "happy" | "normal" | "bored" | "angry" | "sad";
 
 /** Every mood, in a stable order. Shared so the animation-variant mood picker, the speech tag
  * vocabulary and the debug listing all enumerate the same four rather than each keeping a copy
  * that could fall behind the union type above. */
-export const MOODS: Mood[] = ["happy", "normal", "bored", "angry"];
+export const MOODS: Mood[] = ["happy", "normal", "bored", "angry", "sad"];
 
 /**
  * The speech tag a mood is announced under — `mood:bored`, written `@mood:bored` in the file.
@@ -46,6 +46,10 @@ export const MOOD_SPEED_MULTIPLIER: Record<Mood, number> = {
 	happy: 1.1,
 	normal: 1,
 	bored: 0.85,
+	// Below bored, and the only mood that is not reachable from ambient vault activity at all — the
+	// baseline bottoms out at bored. Losing a race is the first thing that hands one out; see
+	// engine/race.ts's moodForPlace and Mascot.awardMood.
+	sad: 0.75,
 };
 
 /** Applied every simulated tick regardless of whether mood is currently enabled — cheap, and
@@ -58,6 +62,11 @@ export function decayAnger(heat: number, dtSeconds: number): number {
 /** The shared, global baseline every mascot starts from — ambient vault activity, not tied to any
  * one mascot. Anger below overrides it per-mascot, since "you threw *that one*" is inherently
  * specific to a mascot in a way "the vault's been quiet a while" never is. */
+/**
+ * Note the narrow return type, which is load-bearing: the ambient baseline can reach bored but never
+ * sad, and never angry. Those two are *earned* per-mascot — angry by being thrown about, sad by
+ * coming last — and a quiet vault is not an insult.
+ */
 export function ambientMood(msSinceVaultActivity: number): "happy" | "normal" | "bored" {
 	if (msSinceVaultActivity <= HAPPY_WITHIN_MS) return "happy";
 	if (msSinceVaultActivity >= BORED_AFTER_MS) return "bored";
