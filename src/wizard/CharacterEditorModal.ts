@@ -629,9 +629,8 @@ export class CharacterEditorModal extends Modal {
 
 		contentEl.createEl("p", {
 			text:
-				`Used by ${entry.label}. Drag to position, scroll (or the buttons below) to zoom. ` +
-				`The bright rectangle is the pose itself; anything dimmed around it is outside the frame ` +
-				`and will be left out when you save, so there's no separate crop step.`,
+				`Used by ${entry.label}. Drag to position, scroll (or the buttons below) to zoom — ` +
+				`whatever falls outside the frame is left out, so there's no separate crop step.`,
 			cls: "setting-item-description",
 		});
 

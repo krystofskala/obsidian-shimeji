@@ -24,20 +24,6 @@ const MIN_SCALE = 0.05;
 const MAX_SCALE = 16;
 const ZOOM_STEP = 1.15;
 const TEMPLATE_OPACITY = 0.35;
-/**
- * How much of the world *outside* the pose frame to show, as a fraction of the frame.
- *
- * The canvas used to be exactly frame-sized, so anything dragged past the edge was clipped by the
- * canvas itself and simply vanished. Reported as an image "poking out of frame" when nudged sideways
- * to centre it — and the real trouble was not the cropping but the blindness: with the overflow
- * invisible there is no way to tell whether what is leaving is the character or the empty margin
- * around it, and those want opposite responses (zoom out, or carry on).
- */
-const VIEW_MARGIN_FRACTION = 0.3;
-/** ...with a floor, so a small pose still gets somewhere to overflow into. */
-const MIN_VIEW_MARGIN = 24;
-/** The dimming over everything outside the frame, so the boundary reads as a boundary. */
-const OUTSIDE_DIM = "rgba(0, 0, 0, 0.55)";
 
 interface WorkingImage {
 	pixels: Pixels;
@@ -59,21 +45,17 @@ function decodeImage(url: string): Promise<HTMLImageElement> {
 }
 
 /**
- * The character wizard's per-pose editor: a target frame the size of the pack's own poses (see
- * PoseFrame; 128x128 is only the default) — checkerboard for
+ * The character wizard's per-pose editor: a fixed 128x128 target frame — checkerboard for
  * transparency, an optional translucent reference pose underneath (`loadTemplate`), the user's
  * own working image pannable/zoomable on top, and read-only anchor guide(s) from the real schema
  * (see `deriveRequiredPoses`'s own doc comment on `anchors` for why these are never editable
  * here). No separate crop tool: whatever of the working image falls outside the frame is simply
- * never sampled at save time (`compositeIntoFrame`, pixels.ts) — moving/zooming *is* the crop. What
- * falls outside is drawn anyway, dimmed, in a margin around the frame: the crop is unavoidable but
- * being unable to see it is not, and "I nudged it sideways and it vanished" was the result.
+ * never sampled at save time (`compositeIntoFrame`, pixels.ts) — moving/zooming *is* the crop.
  *
  * Mirrors `AtlasSlicer`'s own canvas conventions: an upscaled display canvas, pointer capture so
  * a drag survives leaving it, and all state kept in the image's own coordinate space (here, the
- * pose frame — exactly what `compositeIntoFrame` needs, so composing at save time is a direct call
- * with the live transform, no conversion). The view margin is applied at draw time only and never
- * reaches the transform.
+ * fixed 128x128 frame — exactly what `compositeIntoFrame` needs, so composing at save time is a
+ * direct call with the live transform, no conversion).
  */
 export class PoseFitCanvas {
 	private wrapperEl: HTMLElement;
@@ -87,22 +69,14 @@ export class PoseFitCanvas {
 
 	private dragStart: { clientX: number; clientY: number; offsetX: number; offsetY: number } | null = null;
 
-	/** Frame-space padding drawn around the frame on every side — see VIEW_MARGIN_FRACTION. Frame
-	 * coordinates are unchanged by it: (0,0) is still the frame's top-left, and everything that
-	 * composites still works in exactly those coordinates. Only the drawing and the pointer mapping
-	 * know the margin exists. */
-	private get margin(): number {
-		return Math.max(MIN_VIEW_MARGIN, Math.round(Math.max(this.frame.width, this.frame.height) * VIEW_MARGIN_FRACTION));
-	}
-
 	constructor(parentEl: HTMLElement, private frame: PoseFrame = DEFAULT_POSE_FRAME) {
 		this.wrapperEl = parentEl.createDiv({ cls: "shimeji-posefit" });
 		this.canvas = this.wrapperEl.createEl("canvas");
 		const ctx = this.canvas.getContext("2d");
 		if (!ctx) throw new Error("canvas 2D context unavailable");
 		this.ctx = ctx;
-		this.canvas.width = (this.frame.width + this.margin * 2) * DISPLAY_SCALE;
-		this.canvas.height = (this.frame.height + this.margin * 2) * DISPLAY_SCALE;
+		this.canvas.width = this.frame.width * DISPLAY_SCALE;
+		this.canvas.height = this.frame.height * DISPLAY_SCALE;
 		this.canvas.style.cursor = "grab";
 		this.canvas.style.touchAction = "none";
 
@@ -216,13 +190,6 @@ export class PoseFitCanvas {
 		const s = DISPLAY_SCALE;
 		this.ctx.imageSmoothingEnabled = false;
 		this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-
-		// Everything below draws in frame coordinates; the margin is applied once, here, by shifting
-		// the whole context. Keeping it out of the geometry is what stops it leaking into the
-		// transform, which has to stay exactly what `compositeIntoFrame` expects.
-		this.ctx.save();
-		this.ctx.translate(this.margin * s, this.margin * s);
-
 		this.drawCheckerboard();
 
 		if (this.template) {
@@ -242,33 +209,7 @@ export class PoseFitCanvas {
 			);
 		}
 
-		// Drawn over the image, not under it: the whole point is to show the part that will be cut
-		// while making unmistakable which part that is.
-		this.dimOutsideFrame();
-		this.drawFrameBorder();
 		this.drawAnchors();
-		this.ctx.restore();
-	}
-
-	/** Greys out everything beyond the frame, as four bands around it. Whatever falls under these is
-	 * exactly what `compositeIntoFrame` will leave out. */
-	private dimOutsideFrame(): void {
-		const s = DISPLAY_SCALE;
-		const m = this.margin * s;
-		const w = this.frame.width * s;
-		const h = this.frame.height * s;
-		this.ctx.fillStyle = OUTSIDE_DIM;
-		this.ctx.fillRect(-m, -m, w + m * 2, m); // above
-		this.ctx.fillRect(-m, h, w + m * 2, m); // below
-		this.ctx.fillRect(-m, 0, m, h); // left
-		this.ctx.fillRect(w, 0, m, h); // right
-	}
-
-	private drawFrameBorder(): void {
-		const s = DISPLAY_SCALE;
-		this.ctx.strokeStyle = "#8ab4f8";
-		this.ctx.lineWidth = 2;
-		this.ctx.strokeRect(0, 0, this.frame.width * s, this.frame.height * s);
 	}
 
 	private drawCheckerboard(): void {
@@ -312,11 +253,9 @@ export class PoseFitCanvas {
 		const rect = this.canvas.getBoundingClientRect();
 		const scaleX = rect.width > 0 ? this.canvas.width / rect.width : 1;
 		const scaleY = rect.height > 0 ? this.canvas.height / rect.height : 1;
-		// Back into frame coordinates, which is where the transform and the compositor both live —
-		// the margin is a drawing concern and must not reach either.
 		return {
-			x: ((e.clientX - rect.left) * scaleX) / DISPLAY_SCALE - this.margin,
-			y: ((e.clientY - rect.top) * scaleY) / DISPLAY_SCALE - this.margin,
+			x: ((e.clientX - rect.left) * scaleX) / DISPLAY_SCALE,
+			y: ((e.clientY - rect.top) * scaleY) / DISPLAY_SCALE,
 		};
 	}
 
