@@ -286,6 +286,13 @@
 .shimeji-posefit canvas {
 	display: block;
 	image-rendering: pixelated;
+	/* The canvas is now wider than the pose frame — it shows a margin of whatever falls outside, so
+	   nothing dragged past the edge disappears without a trace (see PoseFitCanvas's VIEW_MARGIN_
+	   FRACTION). That makes it wide enough to overflow a modal at its natural size, so it is allowed
+	   to scale down; PoseFitCanvas maps pointer positions through the element's own rect, so a
+	   scaled canvas stays accurate to the pixel. */
+	max-width: 100%;
+	height: auto;
 }
 
 .shimeji-sheet-controls {
