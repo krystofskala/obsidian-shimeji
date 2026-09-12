@@ -7,7 +7,7 @@ import { BehaviorAI } from "../src/shimeji/BehaviorAI";
 import { Random } from "../src/engine/Random";
 import { computeLedgesFromRects } from "../src/engine/Ledges";
 import { mergeCustomContent } from "../src/shimeji/CustomContentBuilder";
-import { Race, RACE_MOOD_MAX_MS, RACE_MOOD_MIN_MS, moodForPlace, ordinal, placeAnnouncement, type Racer } from "../src/engine/race";
+import { Race, RACE_MOOD_MAX_MS, RACE_MOOD_MIN_MS, RaceSpeechTrigger, moodForPlace, ordinal, placeAnnouncement, raceTriggerFor, type Racer } from "../src/engine/race";
 import type { Mood } from "../src/engine/mood";
 import { RACE_CELEBRATION_BEHAVIOR, RACE_DEFEAT_BEHAVIOR, buildRaceReactionsContent } from "../src/shimeji/raceReactions";
 import { DEFAULT_ENGINE_CONFIG, type Ledge } from "../src/engine/types";
@@ -51,18 +51,26 @@ function racer(x = 0, y = 0) {
 
 type Stub = ReturnType<typeof racer>;
 
-/** Everything said during the run, so the announcements can be asserted without a bubble layer. */
+/**
+ * Everything announced during the run, so it can be asserted without a bubble layer.
+ *
+ * Both halves of every announcement are kept: the trigger tag a user can write lines for, and the
+ * built-in fallback the plugin says when they have not.
+ */
 function raceWith(entrants: Stub[], finish = { x: 0, y: 0 }) {
-	const said: { racer: Racer; text: string }[] = [];
-	const race = new Race((r, text) => said.push({ racer: r, text }));
+	const said: { racer: Racer; trigger: string; text: string }[] = [];
+	const race = new Race((r, trigger, text) => said.push({ racer: r, trigger, text }));
 	race.start(entrants, finish);
 	/** One frame: whoever is flagged as arrived is offered to the race, then the race is ticked. */
 	const frame = (present: Stub[] = entrants) => {
 		for (const r of present) if (r.consumeJustReachedSpot()) race.finish(r);
 		race.tick(present);
 	};
-	const textFor = (r: Stub) => said.filter((s) => s.racer === r).map((s) => s.text);
-	return { race, said, frame, textFor };
+	/** The built-in lines, minus the one every entrant gets at the off — those are asserted on their
+	 * own, and repeating them in every other expectation would only be noise. */
+	const textFor = (r: Stub) => said.filter((s) => s.racer === r && s.trigger !== RaceSpeechTrigger.start).map((s) => s.text);
+	const triggersFor = (r: Stub) => said.filter((s) => s.racer === r).map((s) => s.trigger);
+	return { race, said, frame, textFor, triggersFor };
 }
 
 describe("scoring a race", () => {
@@ -162,6 +170,58 @@ describe("scoring a race", () => {
 		b.reached = true;
 		r.frame();
 		expect(r.textFor(b)).toEqual(["Last... 2nd"]);
+	});
+
+	it("offers a tag for every announcement, so the words can be written in the speech file", () => {
+		// The four handles asked for: everyone gets RaceStart at the off, first gets RaceWin, last
+		// gets RaceLost, and everyone in between gets RaceFinished.
+		const [a, b, c, d] = [racer(), racer(), racer(), racer()];
+		const r = raceWith([a, b, c, d]);
+		for (const m of [a, b, c, d]) {
+			m.reached = true;
+			r.frame();
+			m.hasSpotOrder = false;
+		}
+		r.frame();
+		expect(r.triggersFor(a)).toEqual([RaceSpeechTrigger.start, RaceSpeechTrigger.win]);
+		expect(r.triggersFor(b)).toEqual([RaceSpeechTrigger.start, RaceSpeechTrigger.finished]);
+		expect(r.triggersFor(c)).toEqual([RaceSpeechTrigger.start, RaceSpeechTrigger.finished]);
+		expect(r.triggersFor(d)).toEqual([RaceSpeechTrigger.start, RaceSpeechTrigger.lost]);
+	});
+
+	it("tells everyone the race has started, once, before anyone has moved", () => {
+		const [a, b] = [racer(), racer()];
+		const r = raceWith([a, b]);
+		expect(r.said.map((entry) => entry.trigger)).toEqual([RaceSpeechTrigger.start, RaceSpeechTrigger.start]);
+		expect(r.said.every((entry) => entry.text === "Go!")).toBe(true);
+	});
+
+	it("calls everyone who never arrived a loser, not only the worst of them", () => {
+		// None of them finished, so none has a placing to announce — RaceLost is the honest tag for
+		// all of them. The sulking *behaviour* still goes to exactly one; see the test above.
+		const winner = racer(0, 0);
+		const [lost, alsoLost] = [racer(900, 0), racer(500, 0)];
+		const r = raceWith([winner, lost, alsoLost], { x: 0, y: 0 });
+		winner.reached = true;
+		r.frame();
+		for (const m of [winner, lost, alsoLost]) m.hasSpotOrder = false;
+		r.frame();
+		expect(r.triggersFor(lost)).toEqual([RaceSpeechTrigger.start, RaceSpeechTrigger.lost]);
+		expect(r.triggersFor(alsoLost)).toEqual([RaceSpeechTrigger.start, RaceSpeechTrigger.lost]);
+		expect(alsoLost.started, "only one of them sulks about it").toEqual([]);
+	});
+
+	it("maps a placing to a tag the same way whoever asks", () => {
+		// Exposed separately from the race because the mapping is the part worth being able to read
+		// off in one place: first, last, everyone else, and "never arrived" counting as last.
+		expect(raceTriggerFor(1, 5)).toBe(RaceSpeechTrigger.win);
+		expect(raceTriggerFor(2, 5)).toBe(RaceSpeechTrigger.finished);
+		expect(raceTriggerFor(4, 5)).toBe(RaceSpeechTrigger.finished);
+		expect(raceTriggerFor(5, 5)).toBe(RaceSpeechTrigger.lost);
+		expect(raceTriggerFor(undefined, 5)).toBe(RaceSpeechTrigger.lost);
+		// Two entrants is first and last with nothing in between, which is the field where an
+		// off-by-one would hand somebody a RaceFinished that belongs to nobody.
+		expect([raceTriggerFor(1, 2), raceTriggerFor(2, 2)]).toEqual([RaceSpeechTrigger.win, RaceSpeechTrigger.lost]);
 	});
 
 	it("counts past the teens, where a naive ordinal goes wrong", () => {

@@ -189,18 +189,28 @@ export class SpeechBubbles {
 	}
 
 	/**
-	 * Offers a vault event (a note opened, created, deleted, renamed, or edited — see
-	 * `vaultReactions.ts`) to the scheduler, cooldown-gated same as ordinary behaviour speech but
-	 * kept on its own separate cooldown so one kind of remark never silently uses up the other's
-	 * turn. Called once per eligible mascot per event, from main.ts's own vault-event listeners —
-	 * this class still never reaches back into the engine to find out anything for itself.
+	 * Offers a discrete event — a note opened, created, deleted, renamed or edited (see
+	 * `vaultReactions.ts`), a mood changing, a race finishing — to the scheduler, cooldown-gated same
+	 * as ordinary behaviour speech but kept on its own separate cooldown so one kind of remark never
+	 * silently uses up the other's turn. Called once per eligible mascot per event, from main.ts's
+	 * own listeners — this class still never reaches back into the engine to find out anything for
+	 * itself.
+	 *
+	 * `opts` defaults to the vault pacing but is overridable, because not every event wants it: a
+	 * race is a single moment in which *every* mascot is supposed to call out its placing, and a
+	 * 15-second global gap would let four of twenty speak. See DEFAULT_RACE_SPEECH_OPTIONS.
+	 *
+	 * Returns whether anything was actually said, so a caller with something of its own to fall back
+	 * on can tell silence-by-choice from silence-for-want-of-a-line.
 	 */
-	announceEvent(mascot: Mascot, triggerId: string): void {
-		if (!this.enabled) return;
+	announceEvent(mascot: Mascot, triggerId: string, opts: SpeechOptions = DEFAULT_VAULT_REACTION_OPTIONS): boolean {
+		if (!this.enabled) return false;
 		const pool = this.poolFor(mascot);
-		if (pool.size === 0) return;
-		const line = this.scheduler.considerEvent(mascot, triggerId, pool, performance.now(), this.rng, DEFAULT_VAULT_REACTION_OPTIONS);
-		if (line) this.show(mascot, line);
+		if (pool.size === 0) return false;
+		const line = this.scheduler.considerEvent(mascot, triggerId, pool, performance.now(), this.rng, opts);
+		if (!line) return false;
+		this.show(mascot, line);
+		return true;
 	}
 
 	/**

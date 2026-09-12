@@ -1,4 +1,5 @@
 import type { Mood } from "./mood";
+import type { SpeechOptions } from "../speech/SpeechScheduler";
 import { RACE_CELEBRATION_BEHAVIOR, RACE_DEFEAT_BEHAVIOR } from "../shimeji/raceReactions";
 import type { Vec2 } from "./types";
 
@@ -101,9 +102,67 @@ export function moodForPlace(place: number, entrants: number): { mood: Mood; ms:
 	return { mood: gloom >= 0.5 ? "sad" : "bored", ms: ms(gloom) };
 }
 
-/** What the caller does with a finish — announcing it is somebody else's job, because speech has its
- * own enabled flag, cooldowns and bubble layer, and this file reaches into none of that. */
-export type RaceAnnouncer = (racer: Racer, text: string) => void;
+/**
+ * Speech tags a race offers, so what a mascot says about one is written in the speech file rather
+ * than baked in here.
+ *
+ * Deliberately *not* namespaced the way `mood:happy` and `note:open` are. Those two are namespaced
+ * because a bare `@bored` or `@open` would be indistinguishable from a misspelled behaviour name,
+ * and catching that misspelling is exactly what `unmatchedTags` is for. These four read as what they
+ * are on sight, and they are the names they were asked for.
+ *
+ * They compose with the tag matcher's own rules rather than fighting them: tags match by prefix and
+ * the longest one wins, so a single `@Race` line covers every one of these (and the celebration and
+ * sulk behaviours besides), while `@RaceWin` still beats it for whoever actually won.
+ */
+export const RaceSpeechTrigger = {
+	/** Everyone, the moment the order goes out. */
+	start: "RaceStart",
+	/** First place. */
+	win: "RaceWin",
+	/** Last place — and everyone who never arrived, who are further behind than that. */
+	lost: "RaceLost",
+	/** Everyone in between. */
+	finished: "RaceFinished",
+} as const;
+
+export type RaceSpeechTriggerId = (typeof RaceSpeechTrigger)[keyof typeof RaceSpeechTrigger];
+
+export const RACE_SPEECH_TRIGGER_IDS: string[] = Object.values(RaceSpeechTrigger);
+
+/**
+ * Pacing for race announcements, and the one place in this plugin where speech is deliberately not
+ * throttled at all.
+ *
+ * Every other kind of remark is occasional by design — a behaviour changes every few seconds, a
+ * vault event could fire on every keystroke — so the cooldowns exist to stop a running commentary.
+ * A race is the opposite: it happens when you ask for it, each mascot has exactly one thing to say
+ * about it, and "each of them calls out where it came" *is* the feature. Under the vault pacing's
+ * 15-second global gap, four of twenty would get a word in.
+ *
+ * It still writes to the shared event cooldown, so a mascot that has just shouted about a race will
+ * not also remark on the next note you open for a little while. That is the right way round: it has
+ * just spoken.
+ */
+export const DEFAULT_RACE_SPEECH_OPTIONS: SpeechOptions = { chancePercent: 100, perMascotGapMs: 0, globalGapMs: 0 };
+
+/** Which of the four a given placing earns. `place` is undefined for a mascot that never arrived. */
+export function raceTriggerFor(place: number | undefined, entrants: number): RaceSpeechTriggerId {
+	if (place === undefined) return RaceSpeechTrigger.lost;
+	if (place === 1) return RaceSpeechTrigger.win;
+	if (place >= entrants) return RaceSpeechTrigger.lost;
+	return RaceSpeechTrigger.finished;
+}
+
+/**
+ * What the caller does with a finish — announcing it is somebody else's job, because speech has its
+ * own enabled flag, cooldowns and bubble layer, and this file reaches into none of that.
+ *
+ * Both a trigger and a fallback, because the two answer different questions. The trigger lets the
+ * user write what their character says; the fallback is what it says when they have not, and it is
+ * the one that carries the actual placing ("4th!"), which no hand-written line can know.
+ */
+export type RaceAnnouncer = (racer: Racer, triggerId: RaceSpeechTriggerId, fallback: string) => void;
 
 export class Race {
 	private entrants: Racer[] = [];
@@ -127,6 +186,7 @@ export class Race {
 		this.entrants = [...entrants];
 		this.finished = [];
 		this.finishPoint = { x: finish.x, y: finish.y };
+		for (const racer of this.entrants) this.announce(racer, RaceSpeechTrigger.start, "Go!");
 		return true;
 	}
 
@@ -155,7 +215,7 @@ export class Race {
 		if (!this.has(racer) || this.finished.includes(racer)) return false;
 		this.finished.push(racer);
 		const place = this.finished.length;
-		this.announce(racer, placeAnnouncement(place, this.entrants.length));
+		this.announce(racer, raceTriggerFor(place, this.entrants.length), placeAnnouncement(place, this.entrants.length));
 		// Straight away rather than at the end of the race: which half a place falls in depends only
 		// on how many set off, which was known before anyone moved. Waiting would mean the winner
 		// finished its celebration jumps before it was allowed to be pleased about them.
@@ -192,13 +252,16 @@ export class Race {
 		// Nobody who never arrived has a placing, so they are all treated as having come last: the
 		// saddest mood for the longest. They are, after all, still out there.
 		const last = moodForPlace(this.entrants.length, this.entrants.length);
-		for (const racer of stranded) racer.awardMood(last.mood, last.ms);
+		for (const racer of stranded) {
+			racer.awardMood(last.mood, last.ms);
+			// Everyone who never arrived, not only the worst of them: none of them finished, so none
+			// of them has a placing to announce, and `RaceLost` is the honest thing for all of them to
+			// say. The sulking behaviour below is still handed to exactly one.
+			this.announce(racer, RaceSpeechTrigger.lost, "I never even got there...");
+		}
 
 		const loser = stranded.length > 0 ? this.furthestFromFinish(stranded) : this.finished[this.finished.length - 1];
-		if (loser) {
-			if (stranded.includes(loser)) this.announce(loser, "I never even got there...");
-			loser.startNamedBehavior(RACE_DEFEAT_BEHAVIOR);
-		}
+		loser?.startNamedBehavior(RACE_DEFEAT_BEHAVIOR);
 		this.clear();
 	}
 

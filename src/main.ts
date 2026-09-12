@@ -30,7 +30,7 @@ import { newSpecId } from "./shimeji/customContent";
 import { buildPaneWranglingContent } from "./shimeji/paneWrangling";
 import { buildAdventurousnessContent } from "./shimeji/adventurousness";
 import { buildRaceReactionsContent } from "./shimeji/raceReactions";
-import { Race } from "./engine/race";
+import { DEFAULT_RACE_SPEECH_OPTIONS, RACE_SPEECH_TRIGGER_IDS, Race } from "./engine/race";
 import { PackDriver } from "./shimeji/PackDriver";
 import { runMovementSelfTest, startFreePlayRecording, type SelfTestHandle } from "./movementSelfTest";
 import { loadPacksFromFolder } from "./shimeji/PackLoader";
@@ -97,8 +97,13 @@ export default class ShimejiPlugin extends Plugin {
 	 * bubbles like anything else a mascot says, so it is silent when speech is switched off, but the
 	 * jumping and the sulking still happen: those are behaviours, not remarks.
 	 */
-	readonly race: Race = new Race((mascot, text) => {
-		if (this.settings.speechEnabled) this.speech.say(mascot as Mascot, text);
+	readonly race: Race = new Race((racer, triggerId, fallback) => {
+		if (!this.settings.speechEnabled) return;
+		const mascot = racer as Mascot;
+		// The user's own line first. The fallback only runs when there was nothing written for the
+		// tag, and it is the half that carries the actual placing ("4th!") — which no hand-written
+		// line can know, so losing it would be a step backwards for anyone who has not written any.
+		if (!this.speech.announceEvent(mascot, triggerId, DEFAULT_RACE_SPEECH_OPTIONS)) this.speech.say(mascot, fallback);
 	});
 	/** Last parse of the speech file, for the settings screen. Undefined until first read. */
 	speechStats?: SpeechStats;
@@ -1604,6 +1609,9 @@ export default class ShimejiPlugin extends Plugin {
 			// Unconditional for the same reason the vault triggers above are: moodEnabled gates
 			// whether a mood ever *changes*, not whether a tag written for one is a typo.
 			...MOOD_TRIGGER_IDS,
+			// Likewise unconditional. These four look like behaviour names and are not, so without
+			// them here every race line a user wrote would be reported back as a typo.
+			...RACE_SPEECH_TRIGGER_IDS,
 			...this.settings.customVaultReactions.map((r) => r.tag.trim()).filter((tag) => tag.length > 0),
 		];
 	}

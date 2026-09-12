@@ -215,13 +215,23 @@ export function speechLinesTemplate(behaviorNames: string[]): string {
 		["Think I'll sit here a while.", "SitDown"],
 		["Wait for me!", "ChaseMouse"],
 	]);
-	// Unfiltered: these are moods, not behaviours. A mood is announced on the tick it *changes*, so
-	// these are what a mascot says about how a race went once the placing itself is old news — see
-	// engine/race.ts's moodForPlace for which placings land where.
+	// Unfiltered: none of these are behaviour names. The four `Race...` tags fire as the race itself
+	// happens; the `mood:` ones fire afterwards, when the placing is old news but the mood it left
+	// behind is still on — see engine/race.ts for both.
 	section(
-		"How the race went",
+		"Racing",
 		[
-			["Nobody even close.", "mood:happy"],
+			["On your marks...", "RaceStart"],
+			["Try and keep up.", "RaceStart"],
+			["Nobody even close!", "RaceWin"],
+			["Made it.", "RaceFinished"],
+			["Well, somebody had to come last.", "RaceLost"],
+		],
+		false,
+	);
+	section(
+		"How the race left them",
+		[
 			["Still got it.", "mood:happy"],
 			["Could have gone better.", "mood:bored"],
 			["I am never going to live this down.", "mood:sad"],

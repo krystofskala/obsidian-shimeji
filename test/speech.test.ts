@@ -5,6 +5,7 @@ import { resolveSpeechPool, resolveSpeechSourcePath, SpeechBubbles } from "../sr
 import { DEFAULT_VAULT_REACTION_OPTIONS } from "../src/speech/vaultReactions";
 import type { Mascot } from "../src/engine/Mascot";
 import { MOOD_TRIGGER_IDS, moodTriggerId, MOODS, type Mood } from "../src/engine/mood";
+import { DEFAULT_RACE_SPEECH_OPTIONS, RACE_SPEECH_TRIGGER_IDS } from "../src/engine/race";
 
 /** A deterministic stand-in for Math.random: hands back the given values in order, then repeats
  * the last one, so a test states exactly the rolls it means. */
@@ -165,10 +166,10 @@ describe("speechLinesTemplate", () => {
 		expect(parsed.untaggedLines).toEqual([]);
 		expect(parsed.taggedLineCount).toBeGreaterThan(0);
 		// Every tag it produced is a real one, not a fragment of the prose around it. Checked against
-		// behaviour names *and* the mood ids, because that is the pair the real caller hands to
-		// unmatchedTags (main.ts's allLegalSpeechTags) — the template's race examples are tagged with
-		// moods, which are legal on every character and are not behaviour names.
-		expect(unmatchedTags(parsed.pool, ["Fall", "Dragged", "Thrown", "SitDown", "Walk", "ChaseMouse", ...MOOD_TRIGGER_IDS])).toEqual([]);
+		// behaviour names *and* the invented ids, because that is the set the real caller hands to
+		// unmatchedTags (main.ts's allLegalSpeechTags) — the template's racing examples are tagged
+		// with moods and race triggers, which are legal on every character and are not behaviours.
+		expect(unmatchedTags(parsed.pool, ["Fall", "Dragged", "Thrown", "SitDown", "Walk", "ChaseMouse", ...MOOD_TRIGGER_IDS, ...RACE_SPEECH_TRIGGER_IDS])).toEqual([]);
 	});
 
 	it("still writes usable lines when no character is loaded yet", () => {
@@ -407,6 +408,22 @@ describe("SpeechScheduler", () => {
 			expect(s.considerEvent(b, "note:delete", eventPool, 15_001, rolls(0), DEFAULT_VAULT_REACTION_OPTIONS)).toBe(
 				"Bye for now",
 			);
+		});
+
+		it("lets a whole field of racers each get a word in", () => {
+			// Why DEFAULT_RACE_SPEECH_OPTIONS exists at all. Every other kind of remark is occasional
+			// by design, so the cooldowns stop a running commentary. A race is the opposite: it
+			// happens when you ask for it, each mascot has exactly one thing to say, and each of them
+			// calling out where it came *is* the feature. Under the vault pacing's 15-second global
+			// gap, four of twenty would speak.
+			const { pool: racePool } = parseSpeechLines("Made it. @RaceFinished");
+			const vault = new SpeechScheduler(OPTS);
+			const race = new SpeechScheduler(OPTS);
+			const twenty = Array.from({ length: 20 }, () => mascot());
+			const spoke = (s: SpeechScheduler, opts: typeof DEFAULT_VAULT_REACTION_OPTIONS) =>
+				twenty.filter((m, i) => s.considerEvent(m, "RaceFinished", racePool, i * 100, rolls(0), opts) !== undefined).length;
+			expect(spoke(race, DEFAULT_RACE_SPEECH_OPTIONS)).toBe(20);
+			expect(spoke(vault, DEFAULT_VAULT_REACTION_OPTIONS)).toBeLessThan(20);
 		});
 
 		it("stays quiet on a vault event nothing is written for", () => {
