@@ -876,6 +876,8 @@ export default class ShimejiPlugin extends Plugin {
 		window.setTimeout(() => {
 			for (const pack of this.availablePacks) void this.reportMissingArt(pack);
 		}, 0);
+		// Same deferral, same reason — see the method's own comment.
+		window.setTimeout(() => void this.migrateOnnxCacheOutOfPluginFolder(), 0);
 	}
 
 	/** Packs already reported on, so re-deriving availablePacks — every settings change does — does
@@ -1182,10 +1184,11 @@ export default class ShimejiPlugin extends Plugin {
 					exists: (fileName) => this.app.vault.adapter.exists(this.onnxWasmPath(fileName)),
 					write: async (fileName, data) => {
 						// mkdir before writeBinary, same "the parent has to already exist" guard
-						// imageIo.ts's own binary writes already use — onnx-wasm/ never exists yet
-						// on a fresh install, since nothing ships it any more (see embeddings.ts).
-						if (!(await this.app.vault.adapter.exists(this.roomFolder()))) await this.app.vault.adapter.mkdir(this.roomFolder());
-						const dir = `${this.roomFolder()}/onnx-wasm`;
+						// imageIo.ts's own binary writes already use — neither the cache folder nor
+						// onnx-wasm/ exists on a fresh install, since nothing ships them any more
+						// (see embeddings.ts) and cacheFolder deliberately sits outside the plugin.
+						if (!(await this.app.vault.adapter.exists(this.cacheFolder()))) await this.app.vault.adapter.mkdir(this.cacheFolder());
+						const dir = `${this.cacheFolder()}/onnx-wasm`;
 						if (!(await this.app.vault.adapter.exists(dir))) await this.app.vault.adapter.mkdir(dir);
 						await this.app.vault.adapter.writeBinary(this.onnxWasmPath(fileName), data);
 					},
@@ -1344,10 +1347,56 @@ export default class ShimejiPlugin extends Plugin {
 		return this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
 	}
 
+	/**
+	 * Where large things this plugin downloads at runtime are cached — deliberately **not** inside
+	 * the plugin's own folder.
+	 *
+	 * Obsidian treats `plugins/<id>/` as the plugin, and mobile has to have all of it before it will
+	 * turn one on. The ONNX runtime vault search fetches is 13MB, it was being cached in there, and
+	 * the result was a plugin that could no longer be enabled on a phone — for a feature that is
+	 * desktop-only in the first place (see applyVaultSearchEnabled's own `Platform.isMobile` guard).
+	 * That is the second time folder bloat has cost mobile activation; the first was the startup art
+	 * listing.
+	 *
+	 * Still under `.obsidian/`, so it stays out of the user's notes and out of search.
+	 */
+	private cacheFolder(): string {
+		return `${this.app.vault.configDir}/shimeji-cache`;
+	}
+
 	/** Where vault search's own cached ONNX WASM runtime files live — see LocalEmbedder's own
 	 * ensureCached, which fetches them here from the CDN on first use. */
 	private onnxWasmPath(fileName: string): string {
-		return `${this.roomFolder()}/onnx-wasm/${fileName}`;
+		return `${this.cacheFolder()}/onnx-wasm/${fileName}`;
+	}
+
+	/**
+	 * Moves an ONNX cache left inside the plugin folder by an earlier version out to `cacheFolder`.
+	 *
+	 * Moved rather than deleted: it is 13MB somebody has already waited for, and re-downloading it
+	 * to prove a point would be rude. Deferred and failure-tolerant — nothing here is needed for the
+	 * plugin to work, and putting it on the startup path would be repeating the very mistake it
+	 * cleans up after.
+	 */
+	private async migrateOnnxCacheOutOfPluginFolder(): Promise<void> {
+		const adapter = this.app.vault.adapter;
+		const old = `${this.roomFolder()}/onnx-wasm`;
+		try {
+			if (!(await adapter.exists(old))) return;
+			const dest = `${this.cacheFolder()}/onnx-wasm`;
+			if (!(await adapter.exists(this.cacheFolder()))) await adapter.mkdir(this.cacheFolder());
+			if (!(await adapter.exists(dest))) await adapter.mkdir(dest);
+			for (const path of (await adapter.list(old)).files) {
+				const name = path.slice(path.lastIndexOf("/") + 1);
+				const to = `${dest}/${name}`;
+				if (await adapter.exists(to)) await adapter.remove(path);
+				else await adapter.rename(path, to);
+			}
+			await adapter.rmdir(old, true);
+			console.info("[obsidian-shimeji] moved the cached ONNX runtime out of the plugin folder");
+		} catch (err) {
+			console.warn("[obsidian-shimeji] could not move the old ONNX cache; it is harmless but makes the plugin folder large on mobile", err);
+		}
 	}
 
 	/**

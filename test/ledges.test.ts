@@ -26,6 +26,35 @@ describe("withoutWallsInUnusableEdgeStrips", () => {
 		expect(paneWalls(withoutWallsInUnusableEdgeStrips(insetLedges(), 800, 128))).toHaveLength(0);
 	});
 
+	it("narrows the pane rect too, not only the ledge it trims", () => {
+		// The half of this fix that was missing, and which quietly undid the other half.
+		//
+		// A pack's own behaviours never touch the ledge graph: `JumpOnIELeftWall` and friends aim at
+		// `mascot.environment.activeIE.left`, and RuntimeContext reads that straight off the ledge's
+		// `rect` (see its resolveActivePaneLedge). Trimming `x1`/`x2` while leaving `rect` at the raw
+		// pane bounds told the router "you may not stand in the first 64px" and told the pack "the
+		// pane starts at 3px" — so a mascot was sent exactly where the ground had been removed.
+		//
+		// A filter over the graph can only constrain the graph. Coordinates have to be corrected
+		// where the coordinates are read.
+		const trimmed = withoutWallsInUnusableEdgeStrips(insetLedges(), 800, 128);
+		for (const ledge of trimmed) {
+			if (ledge.source !== "pane" || !ledge.rect) continue;
+			expect(ledge.rect.left, "pane rect still reports the unusable left edge").toBeGreaterThanOrEqual(64);
+			expect(ledge.rect.right, "pane rect still reports the unusable right edge").toBeLessThanOrEqual(800 - 64);
+		}
+	});
+
+	it("leaves a pane nowhere near an edge exactly as it was", () => {
+		// Narrowing must be a no-op in the ordinary case, object identity included — `rect` is what
+		// pane wrangling reads to decide what it is resizing.
+		const middle = { left: 300, top: 40, right: 500, bottom: 560 };
+		const ledges = computeLedgesFromRects({ width: 800, height: 600 }, [{ rect: middle, source: "pane" as const }]);
+		for (const ledge of withoutWallsInUnusableEdgeStrips(ledges, 800, 128)) {
+			if (ledge.source === "pane") expect(ledge.rect).toEqual(middle);
+		}
+	});
+
 	it("leaves the window's own walls alone — they are what the strip was standing in for", () => {
 		const kept = withoutWallsInUnusableEdgeStrips(insetLedges(), 800, 128);
 		expect(kept).toContainEqual({ kind: "wall", side: "left", x: 0, y1: 0, y2: 600, source: "window" });

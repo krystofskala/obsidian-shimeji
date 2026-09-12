@@ -177,7 +177,9 @@ export function withoutWallsInUnusableEdgeStrips(ledges: Ledge[], viewportWidth:
 			continue;
 		}
 		if (ledge.kind === "wall") {
-			if (ledge.x >= minStrip && ledge.x <= viewportWidth - minStrip) out.push(ledge);
+			// Kept walls get the narrowed rect too: a mascot clinging to a pane's *far* side still
+			// reads `activeIE.left` for the near one, and that has to be the usable edge as well.
+			if (ledge.x >= minStrip && ledge.x <= viewportWidth - minStrip) out.push({ ...ledge, rect: usable(ledge.rect, minStrip, viewportWidth) });
 			continue;
 		}
 		// A pane's floor and underside get their ends trimmed rather than the whole surface dropped:
@@ -197,9 +199,30 @@ export function withoutWallsInUnusableEdgeStrips(ledges: Ledge[], viewportWidth:
 		// shimeji behaviour, not the bug being fixed here.
 		const x1 = Math.max(ledge.x1, minStrip);
 		const x2 = Math.min(ledge.x2, viewportWidth - minStrip);
-		if (x2 - x1 > 0) out.push(x1 === ledge.x1 && x2 === ledge.x2 ? ledge : { ...ledge, x1, x2 });
+		if (x2 - x1 > 0) out.push(x1 === ledge.x1 && x2 === ledge.x2 ? ledge : { ...ledge, x1, x2, rect: usable(ledge.rect, minStrip, viewportWidth) });
 	}
 	return out;
+}
+
+/**
+ * The part of a pane a mascot may use, which is what `activeIE` has to report.
+ *
+ * Trimming a ledge's extents is only half the job, and leaving the other half undone quietly undid
+ * the whole fix. A pack's own behaviours do not route over ledges at all — `JumpOnIELeftWall` and
+ * friends aim at `mascot.environment.activeIE.left`, and RuntimeContext reads that straight off the
+ * ledge's `rect`. Narrowing `x1`/`x2` while leaving `rect` at the raw pane bounds therefore told the
+ * router "you may not stand in the first 64px" and the pack "the pane starts at 8px", so a mascot
+ * went exactly where the filter had removed the ground — reported as mascots standing on the outer
+ * edge of a pane with most of themselves off the window.
+ *
+ * A filter over the graph can only ever constrain the graph. Coordinates have to be corrected where
+ * the coordinates are read.
+ */
+function usable(rect: Rect | undefined, minStrip: number, viewportWidth: number): Rect | undefined {
+	if (!rect) return rect;
+	const left = Math.max(rect.left, minStrip);
+	const right = Math.min(rect.right, viewportWidth - minStrip);
+	return left === rect.left && right === rect.right ? rect : { ...rect, left, right };
 }
 
 /**
