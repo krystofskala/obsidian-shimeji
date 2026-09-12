@@ -229,6 +229,9 @@ export interface MascotDeps {
 	 * broadcasting that affordance, or undefined. The basis of every mascot-to-mascot
 	 * interaction in the real engine — see Mascot.affordances. */
 	findMascotWithAffordance?: (affordance: string) => Mascot | undefined;
+	/** Invented nearest-partner lookup, used only by an action with a `ScanRange` — see
+	 * Stage.getNearestMascotWithAffordance. */
+	findNearestMascotWithAffordance?: (affordance: string, from: Mascot, range: number, levelTolerance: number) => Mascot | undefined;
 	onContextMenu?: (mascot: Mascot, ev: MouseEvent) => void;
 }
 
@@ -473,6 +476,11 @@ export class Mascot {
 	/** See MascotDeps.findMascotWithAffordance — real Manager.getMascotWithAffordance(). */
 	findMascotWithAffordance(affordance: string): Mascot | undefined {
 		return this.deps.findMascotWithAffordance?.(affordance);
+	}
+
+	/** See MascotDeps.findNearestMascotWithAffordance. */
+	findNearestMascotWithAffordance(affordance: string, range: number, levelTolerance: number): Mascot | undefined {
+		return this.deps.findNearestMascotWithAffordance?.(affordance, this, range, levelTolerance);
 	}
 
 	/** Jumps this mascot straight to a named behavior (right-click menu, Breed's BornBehavior). */

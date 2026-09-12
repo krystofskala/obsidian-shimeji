@@ -82,6 +82,9 @@ export interface ShimejiSettings {
 	/** Re-weights the pack's own climbing and jumping so it happens often enough to see — see
 	 * shimeji/adventurousness.ts for the measurements behind it. */
 	adventurousMovement: boolean;
+	/** Mascots noticing each other nearby, walking over to hug, and pairing up to split into a third —
+	 * see shimeji/interactions.ts. The splitting still obeys allowBreeding. */
+	mascotInteractions: boolean;
 	/** Invented: mascots occasionally pick a destination anywhere in the layout and route to it over
 	 * the ledge graph, climbing walls and hopping between panes to get there. See engine/Routing.ts. */
 	roamEnabled: boolean;
@@ -253,6 +256,7 @@ export const DEFAULT_SETTINGS: ShimejiSettings = {
 	allowWindowThrow: false,
 	allowPaneWrangling: true,
 	adventurousMovement: true,
+	mascotInteractions: true,
 	roamEnabled: true,
 	moodEnabled: true,
 	allowLayoutSurgery: true,
@@ -1393,6 +1397,19 @@ export class ShimejiSettingTab extends PluginSettingTab {
 					.addToggle((toggle) =>
 						toggle.setValue(this.plugin.settings.adventurousMovement).onChange(async (value) => {
 							this.plugin.settings.adventurousMovement = value;
+							await this.plugin.saveSettings();
+							this.plugin.applyCustomContent();
+						}),
+					);
+
+				new Setting(containerEl)
+					.setName("Hug and pair up")
+					.setDesc(
+						"Mascots notice each other when they're nearby on the same level: one walks over to another, and they turn to face each other and hop — a hug, built from your character's own animations since no pack ships hug art. Now and then two pair up and split into a third, using the splitting animation your pack already has; that part only happens if breeding is allowed. Works between different characters too. Give a character its own \"Hugging\" action in the editor to replace the default with real art.",
+					)
+					.addToggle((toggle) =>
+						toggle.setValue(this.plugin.settings.mascotInteractions).onChange(async (value) => {
+							this.plugin.settings.mascotInteractions = value;
 							await this.plugin.saveSettings();
 							this.plugin.applyCustomContent();
 						}),

@@ -1,4 +1,5 @@
 import { ObsidianDomEnvironment, type Environment } from "./Environment";
+import { offers } from "./affordances";
 import { nearestCrowderX } from "./crowding";
 import { computeLedgesFromRects, withoutLedgesTooCloseToTop, withoutWallsInUnusableEdgeStrips } from "./Ledges";
 import { Mascot, type MascotDeps } from "./Mascot";
@@ -211,6 +212,34 @@ export class Stage {
 		return this.mascots.find((m) => m.affordances.includes(affordance));
 	}
 
+	/**
+	 * **Invented**, alongside the faithful lookup above: the *nearest* mascot offering this
+	 * affordance within `range` pixels sideways, standing at about the scanner's own height.
+	 *
+	 * Used only when an action asks for it with a `ScanRange` parameter, which no real pack has —
+	 * so every pack authored for shimeji-ee keeps the original first-in-list pairing exactly. The
+	 * plugin's own interactions (see shimeji/interactions.ts) need it because the original's choice
+	 * does not survive many mascots on many panes: the earliest-created offer is usually somewhere
+	 * the scanner cannot walk to, and the pairing then fails every time while a willing partner
+	 * stands a few steps away.
+	 *
+	 * Also accepts `*` for "anyone standing on the ground" — see ANY_GROUNDED_MASCOT.
+	 */
+	getNearestMascotWithAffordance(affordance: string, from: Mascot, range: number, levelTolerance: number): Mascot | undefined {
+		let best: Mascot | undefined;
+		let bestDx = Infinity;
+		for (const m of this.mascots) {
+			if (m === from || !offers(m, affordance)) continue;
+			if (Math.abs(m.physics.y - from.physics.y) > levelTolerance) continue;
+			const dx = Math.abs(m.physics.x - from.physics.x);
+			if (dx <= range && dx < bestDx) {
+				best = m;
+				bestDx = dx;
+			}
+		}
+		return best;
+	}
+
 	private recomputeLedges(): void {
 		const viewport = this.environment.getViewportSize();
 		this.worldTop = this.environment.getWorldTop();
@@ -326,6 +355,8 @@ export class Stage {
 				if (born) born.physics.facing = facing;
 			},
 			findMascotWithAffordance: (affordance) => this.getMascotWithAffordance(affordance),
+			findNearestMascotWithAffordance: (affordance, from, range, levelTolerance) =>
+				this.getNearestMascotWithAffordance(affordance, from, range, levelTolerance),
 			onContextMenu: this.opts.onContextMenu,
 			getMsSinceVaultActivity: this.opts.getMsSinceVaultActivity,
 		};

@@ -1,4 +1,5 @@
 import { findCeilingAt, SURFACE_TOUCH_REACH } from "../engine/Ledges";
+import { offers } from "../engine/affordances";
 import type { Mascot } from "../engine/Mascot";
 import type { Mood } from "../engine/mood";
 import { applyGravityAndLand, findClingableWall } from "../engine/nativeBehaviors";
@@ -248,6 +249,11 @@ const MOVE_AIRBORNE_GRACE_TICKS = 4;
  * all reroll in visible lockstep. See pickRandomOption. */
 const RANDOM_OPTION_HOLD_MIN_MS = 8000;
 const RANDOM_OPTION_HOLD_MAX_MS = 16000;
+
+/** How far apart two mascots' feet can be and still count as standing on the same level — enough to
+ * cover two panes whose top edges differ by a pixel or two, far short of a pane's height. Used by
+ * a scan both to choose a partner it can walk to and to decide it has reached them. */
+const SCAN_LEVEL_TOLERANCE = 12;
 
 export class ActionRunner {
 	private stack: Frame[] = [];
@@ -544,6 +550,13 @@ export class ActionRunner {
 			// any action's own params. Deliberately after the frame's own tick rather than alongside the
 			// affordance/hotspot refreshes above — see ridePaneEdge for why the order is load-bearing.
 			this.applyPaneSideEffects(frame, env);
+			// The action redirected its own mascot mid-tick — a ScanMove arriving sends *both*
+			// mascots to new behaviours, its own included, and start() replaces the whole stack to do
+			// it. The frame that just finished is no longer on that stack, so popping now would pop
+			// the brand-new action instead, and the behaviour it was sent to would be over before it
+			// began: the partner hugged, the seeker sat down. Nothing ever showed this because no pack
+			// in use had a ScanMove. The fresh action is simply left to run from the next tick.
+			if (!this.stack.includes(frame)) return false;
 			if (!done) return false;
 			// Sequence/Select are pure wrappers that delegate to a child rather than ever actually
 			// moving or holding anything themselves, so a wrapper finishing says nothing about
@@ -1128,17 +1141,32 @@ export class ActionRunner {
 		// A scanner never broadcasts while scanning (real init()/tick() both clear the list).
 		if (env.mascot.affordances.length > 0) env.mascot.affordances.length = 0;
 
+		// A floor-bound scan walks: movement comes only sideways, as it does in the original, where
+		// ScanMove is a Move driven by its poses' own (horizontal) velocity. This implementation used
+		// to glide straight at the target in both axes, which never showed only because no pack in
+		// use had a ScanMove — the moment one did, a mascot would have floated diagonally through the
+		// air to reach a partner on another pane.
+		const walking = frame.action.borderType === "Floor";
+
 		if (!frame.scanTarget) {
-			frame.scanTarget = affordance === "" ? undefined : env.mascot.findMascotWithAffordance(affordance);
+			const range = numParam(frame, env, "ScanRange", 0);
+			frame.scanTarget =
+				affordance === ""
+					? undefined
+					: range > 0
+						? env.mascot.findNearestMascotWithAffordance(affordance, range, SCAN_LEVEL_TOLERANCE)
+						: env.mascot.findMascotWithAffordance(affordance);
 			if (!frame.scanTarget) return true; // nothing to chase: the action is simply over
 		}
 		const target = frame.scanTarget;
 		// Real hasNext(): the target must still be offering the affordance.
-		if (!target.affordances.includes(affordance)) return true;
+		if (!offers(target, affordance)) return true;
 
 		const physics = env.mascot.physics;
 		const targetX = target.physics.x;
-		const targetY = target.physics.y;
+		// Walking, the target's height is where the scanner already is: it cannot climb to it, and
+		// arrival is judged on reaching the partner's side, not their exact anchor.
+		const targetY = walking && Math.abs(target.physics.y - physics.y) <= SCAN_LEVEL_TOLERANCE ? physics.y : target.physics.y;
 		// Real ScanMove publishes the tracked target's live coordinates as variables every tick.
 		frame.locals.TargetX = targetX;
 		frame.locals.TargetY = targetY;
@@ -1153,15 +1181,23 @@ export class ActionRunner {
 		// Move at the pose's own speed toward the target, then snap on overshoot — the same
 		// "if we went past it, we're there" rule real Move/ScanMove use on each axis.
 		const speed = env.config.walkSpeed * dt;
-		const dx = targetX - physics.x;
-		const dy = targetY - physics.y;
-		const distance = Math.hypot(dx, dy);
-		if (distance <= speed || distance === 0) {
-			physics.x = targetX;
-			physics.y = targetY;
+		if (walking) {
+			// Sideways only. A partner off this level is walked *below* and then waited for, which is
+			// what the original does too: its Move never reaches the target's y, so it stands there
+			// until the target stops offering and hasNext() lets it go.
+			const dx = targetX - physics.x;
+			physics.x = Math.abs(dx) <= speed ? targetX : physics.x + Math.sign(dx) * speed;
 		} else {
-			physics.x += (speed * dx) / distance;
-			physics.y += (speed * dy) / distance;
+			const dx = targetX - physics.x;
+			const dy = targetY - physics.y;
+			const distance = Math.hypot(dx, dy);
+			if (distance <= speed || distance === 0) {
+				physics.x = targetX;
+				physics.y = targetY;
+			} else {
+				physics.x += (speed * dx) / distance;
+				physics.y += (speed * dy) / distance;
+			}
 		}
 
 		const arrived = physics.x === targetX && physics.y === targetY;

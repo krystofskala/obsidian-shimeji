@@ -30,6 +30,7 @@ import { newSpecId } from "./shimeji/customContent";
 import { buildPaneWranglingContent } from "./shimeji/paneWrangling";
 import { buildAdventurousnessContent } from "./shimeji/adventurousness";
 import { buildRaceReactionsContent } from "./shimeji/raceReactions";
+import { buildInteractionsContent } from "./shimeji/interactions";
 import { DEFAULT_RACE_SPEECH_OPTIONS, RACE_SPEECH_TRIGGER_IDS, Race, isGuaranteed } from "./engine/race";
 import { PackDriver } from "./shimeji/PackDriver";
 import { runMovementSelfTest, startFreePlayRecording, type SelfTestHandle } from "./movementSelfTest";
@@ -865,7 +866,11 @@ export default class ShimejiPlugin extends Plugin {
 					// are frequency 0, so a mascot that is not in a race is affected by none of it. They
 					// exist only to be started by name when one finishes first or last. Built per pack
 					// because the sad pose is chosen from what that pack actually has.
-					mergeCustomContent(mergeCustomContent(p, paneWrangling), adventurousness),
+					mergeCustomContent(
+						mergeCustomContent(mergeCustomContent(p, paneWrangling), adventurousness),
+						// Built per pack, from that pack's own Walk and Stand — see interactions.ts.
+						this.settings.mascotInteractions ? buildInteractionsContent(p) : undefined,
+					),
 					buildRaceReactionsContent(new Set(p.actions.keys())),
 				),
 				this.settings.customContent[p.id],
