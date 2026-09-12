@@ -1,5 +1,5 @@
 import { SHIMEJI_TICK_MS, SHIMEJI_TICKS_PER_SEC } from "./constants";
-import type { CustomActionSpec, CustomBehaviorSpec, CustomPackContent, CustomPoseSpec } from "./customContent";
+import type { CustomActionSpec, CustomBehaviorSpec, CustomPackContent, CustomPoseAnchorSpec, CustomPoseSpec } from "./customContent";
 import { parseCondition } from "./Expression";
 import type { ActionDef, ActionRefDef, AnimationVariant, BehaviorDef, BehaviorNextDef, MascotPack, PoseDef } from "./types";
 
@@ -75,7 +75,8 @@ export function buildBehaviorDef(spec: CustomBehaviorSpec): BehaviorDef {
  * never mutates `base`, so re-merging after further edits always starts from a clean slate.
  */
 export function mergeCustomContent(base: MascotPack, custom: CustomPackContent | undefined): MascotPack {
-	if (!custom || (custom.actions.length === 0 && custom.behaviors.length === 0)) return base;
+	const anchors = custom?.poseAnchors ?? [];
+	if (!custom || (custom.actions.length === 0 && custom.behaviors.length === 0 && anchors.length === 0)) return base;
 
 	const actions = new Map(base.actions);
 	for (const spec of custom.actions) {
@@ -89,5 +90,41 @@ export function mergeCustomContent(base: MascotPack, custom: CustomPackContent |
 		behaviors.set(spec.name.trim(), buildBehaviorDef(spec));
 	}
 
-	return { ...base, actions, behaviors };
+	// Applied last, and to the *merged* actions rather than the base ones, so an anchor fix also
+	// reaches poses inside actions the user has replaced. An anchor belongs to the artwork; which
+	// action happens to play it is beside the point.
+	return { ...base, actions: withPoseAnchors(actions, anchors), behaviors };
+}
+
+/** Rewrites the anchor of every pose drawn from an overridden image, throughout the pack. */
+function withPoseAnchors(actions: Map<string, ActionDef>, overrides: readonly CustomPoseAnchorSpec[]): Map<string, ActionDef> {
+	if (overrides.length === 0) return actions;
+	// Last one wins, so a re-saved override replaces rather than fights an earlier one.
+	const byImage = new Map<string, CustomPoseAnchorSpec>();
+	for (const o of overrides) if (o.image.trim()) byImage.set(normalizeImage(o.image), o);
+
+	const out = new Map<string, ActionDef>();
+	for (const [name, action] of actions) {
+		let touched = false;
+		const animations = action.animations.map((variant) => {
+			let variantTouched = false;
+			const poses = variant.poses.map((pose) => {
+				const override = byImage.get(normalizeImage(pose.image));
+				if (!override || (pose.anchor.x === override.x && pose.anchor.y === override.y)) return pose;
+				variantTouched = true;
+				return { ...pose, anchor: { x: override.x, y: override.y } };
+			});
+			if (!variantTouched) return variant;
+			touched = true;
+			return { ...variant, poses };
+		});
+		out.set(name, touched ? { ...action, animations } : action);
+	}
+	return out;
+}
+
+/** Packs are inconsistent about the leading slash, and an override that misses because of one would
+ * look exactly like an override that does not work. */
+function normalizeImage(image: string): string {
+	return image.trim().replace(/^[/\\]+/, "").toLowerCase();
 }

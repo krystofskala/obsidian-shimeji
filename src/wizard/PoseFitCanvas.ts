@@ -24,6 +24,10 @@ const MIN_SCALE = 0.05;
 const MAX_SCALE = 16;
 const ZOOM_STEP = 1.15;
 const TEMPLATE_OPACITY = 0.35;
+/** How near the anchor crosshair a grab has to land to take hold of it rather than the image. In
+ * frame pixels, and comfortably larger than the crosshair itself — it is a point, and a point is
+ * not something anyone can hit exactly. */
+const ANCHOR_GRAB_REACH = 8;
 
 interface WorkingImage {
 	pixels: Pixels;
@@ -68,6 +72,26 @@ export class PoseFitCanvas {
 	private anchors: Anchor[] = [];
 
 	private dragStart: { clientX: number; clientY: number; offsetX: number; offsetY: number } | null = null;
+	/** Which anchor is being dragged, if any — see setAnchorEditable. */
+	private anchorDrag: number | null = null;
+	private onAnchorMoved?: (anchor: Anchor) => void;
+
+	/**
+	 * Lets the anchor be dragged, reporting every move.
+	 *
+	 * Off by default, because for most of this wizard's flows the anchor is genuinely read-only: it
+	 * comes from the pack's actions.xml and there is nowhere to write a change back to. It is
+	 * switched on where there *is* somewhere — a per-image anchor override in the pack's custom
+	 * content — and that is the only case where dragging it means anything.
+	 *
+	 * Worth having at all because for some packs nudging the image cannot do the job. A pose drawn
+	 * hard against the edge of its own frame has nothing left to nudge: move it and the character is
+	 * cut. Wall poses are the usual offenders, since the contact side *is* the frame edge.
+	 */
+	setAnchorEditable(onMoved: (anchor: Anchor) => void): void {
+		this.onAnchorMoved = onMoved;
+		this.canvas.style.cursor = "grab";
+	}
 
 	constructor(parentEl: HTMLElement, private frame: PoseFrame = DEFAULT_POSE_FRAME) {
 		this.wrapperEl = parentEl.createDiv({ cls: "shimeji-posefit" });
@@ -260,14 +284,49 @@ export class PoseFitCanvas {
 	}
 
 	private onPointerDown(e: PointerEvent): void {
-		if (!this.working || e.button !== 0) return;
+		if (e.button !== 0) return;
+		// The anchor gets first refusal on a grab that lands on it: it is a small target sitting on
+		// top of the image, and the image is draggable everywhere, so without this it could never be
+		// picked up at all.
+		const grabbed = this.onAnchorMoved ? this.anchorAt(this.framePoint(e)) : null;
+		if (grabbed !== null) {
+			e.preventDefault();
+			this.canvas.setPointerCapture(e.pointerId);
+			this.anchorDrag = grabbed;
+			this.canvas.style.cursor = "grabbing";
+			return;
+		}
+		if (!this.working) return;
 		e.preventDefault();
 		this.canvas.setPointerCapture(e.pointerId);
 		this.dragStart = { clientX: e.clientX, clientY: e.clientY, offsetX: this.transform.offsetX, offsetY: this.transform.offsetY };
 		this.canvas.style.cursor = "grabbing";
 	}
 
+	/** Which anchor, if any, is close enough to `p` (frame space) to count as grabbed. */
+	private anchorAt(p: { x: number; y: number }): number | null {
+		for (let i = 0; i < this.anchors.length; i++) {
+			const a = this.anchors[i];
+			if (Math.hypot(a.x - p.x, a.y - p.y) <= ANCHOR_GRAB_REACH) return i;
+		}
+		return null;
+	}
+
 	private onPointerMove(e: PointerEvent): void {
+		if (this.anchorDrag !== null) {
+			const p = this.framePoint(e);
+			// Clamped to the frame: an anchor outside the pose is a character the engine draws
+			// entirely beside where it thinks it is. Rounded because anchors are whole pixels in the
+			// schema, and a fractional one would be written back as a fraction.
+			const moved = {
+				x: Math.round(Math.min(Math.max(p.x, 0), this.frame.width)),
+				y: Math.round(Math.min(Math.max(p.y, 0), this.frame.height)),
+			};
+			this.anchors[this.anchorDrag] = moved;
+			this.redraw();
+			this.onAnchorMoved?.(moved);
+			return;
+		}
 		if (!this.dragStart) return;
 		const rect = this.canvas.getBoundingClientRect();
 		const scaleX = rect.width > 0 ? this.canvas.width / rect.width : 1;
@@ -280,6 +339,7 @@ export class PoseFitCanvas {
 
 	private onDragEnd(): void {
 		this.dragStart = null;
+		this.anchorDrag = null;
 		this.canvas.style.cursor = "grab";
 	}
 

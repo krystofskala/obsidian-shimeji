@@ -24,7 +24,7 @@ import { SpriteSheetModal } from "../sprites/SpriteSheetModal";
 import { AnimationOptionsModal } from "./AnimationOptionsModal";
 import { describeActionHint } from "./actionHints";
 import { deriveAnimatedActions, findReferenceVelocity, type AnimatedActionChecklist } from "./animationOptions";
-import { deriveRequiredPoses, type PoseChecklist, type PoseChecklistEntry } from "./deriveRequiredPoses";
+import { deriveRequiredPoses, type Anchor, type PoseChecklist, type PoseChecklistEntry } from "./deriveRequiredPoses";
 import { imagesUsedByActions, imagesWorthSlicing } from "./imageCandidates";
 import { DEFAULT_POSE_FRAME, PoseFitCanvas, type PoseFrame } from "./PoseFitCanvas";
 import { PoseFitModal } from "./PoseFitModal";
@@ -109,6 +109,14 @@ type View = "name" | "confirmMigration" | "overview" | "fit" | "editAction" | "e
  * in one pack share a size or the pack would not animate, so this is reading a convention rather
  * than taking a survey — and each one is an image decode while a modal is opening. */
 const POSE_FRAME_SAMPLES = 6;
+
+/** Packs are inconsistent about the leading slash on an image path, and an override that missed
+ * because of one would look exactly like an override that does not work. Matches the same
+ * normalisation mergeCustomContent applies when it puts these to use. */
+function sameImage(a: string, b: string): boolean {
+	const norm = (v: string) => v.trim().replace(/^[/\\]+/, "").toLowerCase();
+	return norm(a) === norm(b);
+}
 
 export class CharacterEditorModal extends Modal {
 	private view: View = "name";
@@ -635,7 +643,12 @@ export class CharacterEditorModal extends Modal {
 		});
 
 		this.fitCanvas = new PoseFitCanvas(contentEl, this.fitFrame);
-		this.fitCanvas.setAnchors(entry.anchors);
+		this.fitCanvas.setAnchors(this.anchorsFor(entry));
+		// Draggable, and saved against the *image* rather than any action — see CustomPoseAnchorSpec.
+		// This is the one thing nudging the picture cannot do: a pose drawn hard against the edge of
+		// its own frame has nothing left to nudge, and wall poses are drawn exactly that way because
+		// the contact side is the frame edge.
+		this.fitCanvas.setAnchorEditable((anchor) => void this.saveAnchor(entry.image, anchor));
 		void this.loadTemplateForFit(entry);
 		// Refitting starts from the pose the pack already has, which is the whole point of the word:
 		// you came here to nudge an existing image, not to find an empty frame and go looking for the
@@ -769,6 +782,27 @@ export class CharacterEditorModal extends Modal {
 		for (const entry of tally.values()) if (!best || entry.n > best.n) best = entry;
 		this.measuredFrame = best?.frame ?? null;
 		return best?.frame;
+	}
+
+	/** The anchor guide to draw: the user's own override for this image when there is one, otherwise
+	 * whatever the pack's actions.xml says. */
+	private anchorsFor(entry: PoseChecklistEntry): Anchor[] {
+		const override = (this.content.poseAnchors ?? []).find((a) => sameImage(a.image, entry.image));
+		return override ? [{ x: override.x, y: override.y }] : entry.anchors;
+	}
+
+	/**
+	 * Records a moved anchor, replacing any earlier one for the same image.
+	 *
+	 * Saved on every drag rather than behind a button: there is no Save on this editor's anchor, the
+	 * drag *is* the edit, and an anchor that silently forgot itself when the modal closed would be
+	 * the same silence this whole change is about. `commit()` is the same path every other edit here
+	 * takes, so it lands in the pack's custom content and takes effect on the next respawn.
+	 */
+	private async saveAnchor(image: string, anchor: Anchor): Promise<void> {
+		const rest = (this.content.poseAnchors ?? []).filter((a) => !sameImage(a.image, image));
+		this.content.poseAnchors = [...rest, { id: newSpecId(), image, x: anchor.x, y: anchor.y }];
+		await this.commit();
 	}
 
 	private async loadTemplateForFit(entry: PoseChecklistEntry): Promise<void> {

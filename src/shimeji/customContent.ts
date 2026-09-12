@@ -126,13 +126,39 @@ export function newBehaviorSpec(): CustomBehaviorSpec {
 	return { id: newSpecId(), name: "", frequency: 10, condition: "", nextBehaviors: [] };
 }
 
+/**
+ * "Wherever this image is used, anchor it here" — an override keyed on the image rather than on any
+ * action.
+ *
+ * An anchor is a property of the artwork, not of the action that happens to play it: it says where
+ * on the picture the character actually touches the world. Downloaded packs get this wrong all the
+ * time, because most of them ship no `conf/` of their own and inherit the standard anchors, which
+ * assume the standard artwork. A pack whose wall poses are drawn hard against the right edge of the
+ * frame then hangs 64px inside the wall, and no amount of nudging the image fixes it — there is
+ * nothing left to nudge, the art is already at the edge.
+ *
+ * Keyed on the image for the same reason `deriveRequiredPoses` groups by image: that is the unit
+ * the artist actually drew and the unit the fit editor actually edits. The one thing it cannot
+ * express is an image deliberately anchored two different ways by two different actions — rare, and
+ * called out in `deriveRequiredPoses`'s own note on `anchors`. An override flattens those to one.
+ */
+export interface CustomPoseAnchorSpec {
+	id: string;
+	/** Pack-relative, e.g. "/shime13.png" — same convention as PoseDef.image. */
+	image: string;
+	x: number;
+	y: number;
+}
+
 export interface CustomPackContent {
 	actions: CustomActionSpec[];
 	behaviors: CustomBehaviorSpec[];
+	/** Optional so every previously-saved settings blob still parses as valid content. */
+	poseAnchors?: CustomPoseAnchorSpec[];
 }
 
 export function emptyCustomPackContent(): CustomPackContent {
-	return { actions: [], behaviors: [] };
+	return { actions: [], behaviors: [], poseAnchors: [] };
 }
 
 /** UI-only identity, never persisted as anything security-sensitive — just needs to be stable
