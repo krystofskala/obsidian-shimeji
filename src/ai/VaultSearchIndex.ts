@@ -1,6 +1,7 @@
 import type { App, TFile } from "obsidian";
 import type { Embedder } from "./embeddings";
 import { chunkNote, diffIndex, isExcludedPath, rankRelevant, type IndexedChunk, type IndexedNote } from "./vaultSearch";
+import { Debouncer, isMarkdownFile, takeBatch } from "./vaultSearchScheduling";
 
 /** How much of *one chunk's* own text gets embedded and, unmodified, shown to the chat model as
  * retrieved context — one slice serving both purposes rather than tracking two separately
@@ -10,14 +11,24 @@ import { chunkNote, diffIndex, isExcludedPath, rankRelevant, type IndexedChunk, 
  * a single heading-delimited section running past this budget is rare, and this is the same
  * "a few paragraphs is plenty of context" ceiling that made sense per-note before chunking too. */
 const EXCERPT_CHAR_BUDGET = 1500;
-/** How many notes to embed before yielding back to the event loop with a bare setTimeout(0), so
- * a full rebuild over a large vault reads as "working in the background" rather than freezing
- * Obsidian's UI for however long the whole scan takes. */
+/** How many notes to embed before the longer BATCH_PAUSE_MS rest. Embedding runs on the CPU on
+ * Obsidian's own thread, so a large vault or a Sync download has to leave real gaps for the UI: a
+ * bare setTimeout(0) between batches was not enough to stop it stuttering. */
 const BATCH_SIZE = 5;
+const BATCH_PAUSE_MS = 250;
+/** A short rest after every chunk, so a long note can't hold the UI for its whole length. */
+const CHUNK_PAUSE_MS = 10;
+/** Writing means serializing the entire index, which gets slower as it grows, so it must not happen
+ * per note. Once things go quiet it waits this long; during a long scan it still happens at this
+ * bound, which limits what a crash can lose to a couple of minutes of re-embedding. */
+const PERSIST_DEBOUNCE_MS = 10_000;
+const PERSIST_MAX_WAIT_MS = 120_000;
 /** Matches the reasoning `VAULT_EDIT_DEBOUNCE_MS` already sets in main.ts for a different
  * feature watching the same `vault.on("modify")` event: re-embed once edits go quiet, not once
  * per keystroke/autosave tick. */
 const REINDEX_DEBOUNCE_MS = 1500;
+/** Keeps a burst of events from postponing the queue indefinitely. */
+const REINDEX_MAX_WAIT_MS = 30_000;
 const INDEX_FILE_NAME = "vault-search-index.json";
 
 export interface VaultSearchStatus {
@@ -26,18 +37,37 @@ export interface VaultSearchStatus {
 	indexing: boolean;
 }
 
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
- * Owns the on-disk cache of note embeddings and the live search over it. Deliberately not
- * unit-tested directly — see vaultSearch.ts's own doc comment for why: this class is IO glue
- * around that file's pure logic, the same category `ai/providers.ts`'s `sendAiMessage` is
- * already in. Never constructed or called on mobile or with the feature disabled — that decision
+ * Owns the on-disk cache of note embeddings and the live search over it. Ranking and chunking live
+ * in vaultSearch.ts; test/vaultSearchIndex.test.ts covers this class's scheduling with a fake vault
+ * and a fake embedder. Never constructed or called on mobile or with the feature disabled — that decision
  * lives entirely in main.ts, which is the one place that knows about settings and `Platform`.
  */
 export class VaultSearchIndex {
 	private index = new Map<string, IndexedNote>();
-	private loaded = false;
-	private indexing = false;
-	private dirtyTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	private loadPromise?: Promise<void>;
+	/** Everything waiting to be embedded, keyed by path: rebuild() and scheduleReembed() both feed
+	 * this one queue, so there is only ever one embedding loop however many files were reported. */
+	private queue = new Map<string, TFile>();
+	/** Set for exactly as long as an embedding loop is running. */
+	private draining?: Promise<Error | undefined>;
+	private disposed = false;
+	/** Writes run one after another: two overlapping writes to one file could interleave. */
+	private writeChain: Promise<void> = Promise.resolve();
+	private persistDebouncer = new Debouncer(() => this.queueWrite(), PERSIST_DEBOUNCE_MS, PERSIST_MAX_WAIT_MS);
+	private reembedDebouncer = new Debouncer(
+		() => {
+			void this.drain().then((error) => {
+				if (error) console.warn("Vault search: couldn't index a note", error);
+			});
+		},
+		REINDEX_DEBOUNCE_MS,
+		REINDEX_MAX_WAIT_MS,
+	);
 
 	constructor(
 		private app: App,
@@ -68,12 +98,17 @@ export class VaultSearchIndex {
 	/** For the settings screen's status line — never throws, never triggers a load itself, so
 	 * rendering settings can't accidentally kick off IO. */
 	status(): VaultSearchStatus {
-		return { indexedCount: this.index.size, totalCount: this.eligibleFiles().length, indexing: this.indexing };
+		return { indexedCount: this.index.size, totalCount: this.eligibleFiles().length, indexing: this.draining !== undefined };
 	}
 
-	private async ensureLoaded(): Promise<void> {
-		if (this.loaded) return;
-		this.loaded = true;
+	/** Shared promise, so nothing can embed into (or write out) a still-empty map while the first
+	 * caller is reading the cache, which would throw that work away or overwrite the file. */
+	private ensureLoaded(): Promise<void> {
+		this.loadPromise ??= this.load();
+		return this.loadPromise;
+	}
+
+	private async load(): Promise<void> {
 		const path = this.indexPath();
 		if (!(await this.app.vault.adapter.exists(path))) return;
 		try {
@@ -91,8 +126,62 @@ export class VaultSearchIndex {
 		}
 	}
 
-	private async persist(): Promise<void> {
-		await this.app.vault.adapter.write(this.indexPath(), JSON.stringify([...this.index.values()]));
+	private queueWrite(): void {
+		this.writeChain = this.writeChain
+			.then(() => this.app.vault.adapter.write(this.indexPath(), JSON.stringify([...this.index.values()])))
+			.catch((error) => console.warn("Vault search: couldn't save the index", error));
+	}
+
+	/** Writes the index now if it has unsaved changes, and resolves once that write is finished.
+	 * main.ts registers this as a quit task, because Obsidian can't wait for async work started in
+	 * onunload. Best effort by Obsidian's own docs; anything lost is re-embedded by the next
+	 * startup's rebuild(), and a half-written file is already treated as "start over" on load. */
+	async flush(): Promise<void> {
+		this.persistDebouncer.flush();
+		await this.writeChain;
+	}
+
+	/** The index is going away (plugin unloaded, or the feature switched off): nothing may fire
+	 * after this, and changes not yet written are saved rather than lost. */
+	async dispose(): Promise<void> {
+		this.disposed = true;
+		this.reembedDebouncer.cancel();
+		this.queue.clear();
+		// Saved before waiting for the loop too: Obsidian doesn't wait for an async onunload, so
+		// the earlier this write starts the better.
+		await this.flush();
+		await this.draining;
+		await this.flush();
+	}
+
+	/** Starts the embedding loop, or joins the one already running, which also picks up whatever
+	 * was just queued: `draining` is cleared in the same synchronous step as the loop's last check
+	 * of the queue. Resolves to the last error, if a note failed. */
+	private drain(): Promise<Error | undefined> {
+		this.draining ??= this.runDrain();
+		return this.draining;
+	}
+
+	private async runDrain(): Promise<Error | undefined> {
+		let lastError: Error | undefined;
+		try {
+			await this.ensureLoaded();
+			while (this.queue.size > 0 && !this.disposed) {
+				for (const file of takeBatch(this.queue, BATCH_SIZE)) {
+					if (this.disposed) break;
+					try {
+						await this.embedOne(file);
+					} catch (e) {
+						// One unreadable note must not abandon the rest of the queue.
+						lastError = e instanceof Error ? e : new Error(String(e));
+					}
+				}
+				if (this.queue.size > 0 && !this.disposed) await sleep(BATCH_PAUSE_MS);
+			}
+		} finally {
+			this.draining = undefined;
+		}
+		return lastError;
 	}
 
 	/** Full scan: embeds whatever is new or changed since the cache was last written, drops
@@ -104,25 +193,23 @@ export class VaultSearchIndex {
 	 * right after the first does almost nothing. */
 	async rebuild(): Promise<void> {
 		await this.ensureLoaded();
-		if (this.indexing) return;
-		this.indexing = true;
-		try {
-			const files = this.eligibleFiles();
-			const { stale, pruned } = diffIndex(
-				files.map((f) => ({ path: f.path, mtime: f.stat.mtime })),
-				this.index,
-			);
-			for (const path of pruned) this.index.delete(path);
-			const byPath = new Map(files.map((f) => [f.path, f]));
-			for (let i = 0; i < stale.length; i += BATCH_SIZE) {
-				const batch = stale.slice(i, i + BATCH_SIZE);
-				await Promise.all(batch.map((entry) => this.embedOne(byPath.get(entry.path))));
-				await new Promise((resolve) => setTimeout(resolve, 0));
-			}
-			await this.persist();
-		} finally {
-			this.indexing = false;
+		if (this.disposed) return;
+		const files = this.eligibleFiles();
+		const { stale, pruned } = diffIndex(
+			files.map((f) => ({ path: f.path, mtime: f.stat.mtime })),
+			this.index,
+		);
+		for (const path of pruned) this.index.delete(path);
+		if (pruned.length > 0) this.persistDebouncer.schedule();
+		const byPath = new Map(files.map((f) => [f.path, f]));
+		for (const { path } of stale) {
+			const file = byPath.get(path);
+			if (file) this.queue.set(path, file);
 		}
+		this.reembedDebouncer.cancel(); // this pass covers whatever the timer was waiting for
+		const error = this.queue.size > 0 || this.draining ? await this.drain() : undefined;
+		await this.flush();
+		if (error) throw error;
 	}
 
 	/** Builds the excerpt actually embedded (and later shown as retrieved context) for one chunk —
@@ -141,23 +228,24 @@ export class VaultSearchIndex {
 	 *
 	 * Replaces the note's entire chunk list wholesale rather than patching it — see IndexedNote's
 	 * own doc comment for why that's what makes a heading added/removed/reordered since the last
-	 * index never leave a stale orphaned chunk behind. Chunks are embedded concurrently
-	 * (Promise.all), the same concurrency this method's own callers already use across *different*
-	 * notes in one rebuild() batch — embedder.embed() already has to tolerate that today. */
+	 * index never leave a stale orphaned chunk behind. Chunks are embedded one at a time with
+	 * CHUNK_PAUSE_MS in between.
+	 *
+	 * A note whose mtime matches its cached entry is skipped, so being reported again by Sync
+	 * without actually having changed costs nothing. */
 	private async embedOne(file: TFile | undefined): Promise<void> {
 		if (!file || isExcludedPath(file.path, this.excludedPaths())) return;
+		if (this.index.get(file.path)?.mtime === file.stat.mtime) return;
 		const content = await this.app.vault.cachedRead(file);
-		const noteChunks = chunkNote(content);
-		const chunks = (
-			await Promise.all(
-				noteChunks.map(async (chunk): Promise<IndexedChunk | undefined> => {
-					const excerpt = this.excerptFor(chunk);
-					if (!excerpt.trim()) return undefined; // an empty section has nothing to search for or show
-					const embedding = await this.embedder.embed(excerpt);
-					return { path: file.path, heading: chunk.heading, excerpt, embedding };
-				}),
-			)
-		).filter((c): c is IndexedChunk => c !== undefined);
+		const chunks: IndexedChunk[] = [];
+		for (const chunk of chunkNote(content)) {
+			const excerpt = this.excerptFor(chunk);
+			if (!excerpt.trim()) continue; // an empty section has nothing to search for or show
+			const embedding = await this.embedder.embed(excerpt);
+			chunks.push({ path: file.path, heading: chunk.heading, excerpt, embedding });
+			await sleep(CHUNK_PAUSE_MS);
+		}
+		this.persistDebouncer.schedule();
 		if (chunks.length === 0) {
 			// An empty note (or one whose only content is now-excluded/whitespace) has nothing to
 			// search for — dropped rather than kept as a record with zero chunks, the same "nothing
@@ -168,22 +256,13 @@ export class VaultSearchIndex {
 		this.index.set(file.path, { path: file.path, mtime: file.stat.mtime, chunks });
 	}
 
-	/** Called from main.ts's existing `vault.on("modify"/"create")` listeners. A stale timer for
-	 * the same path is replaced rather than left to also fire, the same "restart the clock on
-	 * every edit" shape `VAULT_EDIT_DEBOUNCE_MS` already uses. */
+	/** Called from main.ts's existing `vault.on("modify"/"create")` listeners. Only queues the file:
+	 * one shared timer restarts on every report and then a single loop works through the queue in
+	 * batches, so a Sync download of thousands of files can't start thousands of embeddings. */
 	scheduleReembed(file: TFile): void {
-		const existing = this.dirtyTimers.get(file.path);
-		if (existing) clearTimeout(existing);
-		this.dirtyTimers.set(
-			file.path,
-			setTimeout(() => {
-				this.dirtyTimers.delete(file.path);
-				void this.ensureLoaded().then(async () => {
-					await this.embedOne(file);
-					await this.persist();
-				});
-			}, REINDEX_DEBOUNCE_MS),
-		);
+		if (this.disposed || !isMarkdownFile(file) || isExcludedPath(file.path, this.excludedPaths())) return;
+		this.queue.set(file.path, file);
+		this.reembedDebouncer.schedule();
 	}
 
 	/** Called from main.ts's existing `vault.on("delete")` listener, and from its `"rename"`
@@ -192,13 +271,9 @@ export class VaultSearchIndex {
 	 * key-rename case, since renames are rare enough that re-embedding once is not worth the
 	 * extra code. */
 	forget(path: string): void {
-		const timer = this.dirtyTimers.get(path);
-		if (timer) {
-			clearTimeout(timer);
-			this.dirtyTimers.delete(path);
-		}
-		void this.ensureLoaded().then(async () => {
-			if (this.index.delete(path)) await this.persist();
+		this.queue.delete(path);
+		void this.ensureLoaded().then(() => {
+			if (this.index.delete(path) && !this.disposed) this.persistDebouncer.schedule();
 		});
 	}
 

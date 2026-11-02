@@ -977,9 +977,13 @@ modification time, so a note that hasn't changed since it was last indexed is ne
 and a path added to the exclusion list afterward is dropped from the cache on the next rebuild even
 though the note itself still exists. Editing, creating, deleting, or renaming a note updates the
 index incrementally in the background (the same "wait for edits to settle" debounce the rest of the
-plugin already uses for vault reactions) — **Rebuild index** in settings forces a full pass, useful
-right after turning the feature on for the first time (or after changing the exclusion list), and
-its status line shows how many notes are indexed so far.
+plugin already uses for vault reactions), and about 30 seconds after Obsidian starts it picks up
+whatever changed while it was closed. Either way notes go through one queue, a few at a time with
+rests in between, and the cache file is written at most every couple of minutes while that runs
+instead of after each note, so a large vault or a big Sync download doesn't stall the app. **Rebuild
+index** in settings runs a full pass right away, useful right after turning the feature on for the
+first time (or after changing the exclusion list), and its status line shows how many notes are
+indexed so far.
 
 Sending a chat message embeds it the same way and finds the **Notes per message** most relevant
 already-indexed chunks — not notes; two different sections of the same note can both show up if

@@ -76,6 +76,8 @@ const NOTE_MISCHIEF_CHANCE = 0.03;
  * mid-typing every time the per-mascot cooldown reopened. Reset on every modify, so it only ever
  * fires once edits have actually gone quiet. */
 const VAULT_EDIT_DEBOUNCE_MS = 1500;
+/** How long after the layout is ready vault search looks for notes changed while Obsidian was closed. */
+const VAULT_SEARCH_CATCH_UP_DELAY_MS = 30_000;
 
 /** Shift + three clicks in roughly the same place within this window orders the nearest mascot to
  * that spot. Shift is what makes the gesture safe to listen for passively: a plain triple-click is
@@ -573,12 +575,31 @@ export default class ShimejiPlugin extends Plugin {
 				}
 			}),
 		);
+		// Registered only once the layout is ready, for the reason spelled out on the packs listeners
+		// below: Obsidian reports every existing file as a "create" while a vault first loads, which
+		// used to send the whole vault to the embedder on every single start.
+		this.app.workspace.onLayoutReady(() => {
+			this.registerEvent(
+				this.app.vault.on("create", (file) => {
+					if (!(file instanceof TFile)) return;
+					this.recordVaultActivity();
+					this.reactToVaultEvent(VaultReactionTrigger.create);
+					this.vaultSearchIndex?.scheduleReembed(file);
+				}),
+			);
+			// That startup flood was also the only thing noticing notes changed while Obsidian was
+			// closed. This catches them instead, re-embedding only what actually differs, and late
+			// enough not to compete with the rest of startup.
+			const catchUp = window.setTimeout(() => {
+				this.vaultSearchIndex?.rebuild().catch((e) => console.warn("Vault search: startup catch-up failed", e));
+			}, VAULT_SEARCH_CATCH_UP_DELAY_MS);
+			this.register(() => window.clearTimeout(catchUp));
+		});
+		// onunload can't make Obsidian wait for an async write; a quit task can, on a best-effort basis.
 		this.registerEvent(
-			this.app.vault.on("create", (file) => {
-				if (!(file instanceof TFile)) return;
-				this.recordVaultActivity();
-				this.reactToVaultEvent(VaultReactionTrigger.create);
-				this.vaultSearchIndex?.scheduleReembed(file);
+			this.app.workspace.on("quit", (tasks) => {
+				const index = this.vaultSearchIndex;
+				if (index) tasks.add(() => index.flush());
 			}),
 		);
 		this.registerEvent(
@@ -707,6 +728,7 @@ export default class ShimejiPlugin extends Plugin {
 		this.stopRoomOcclusion?.();
 		this.roomOcclusion.destroy();
 		if (this.vaultEditDebounceTimer !== null) window.clearTimeout(this.vaultEditDebounceTimer);
+		void this.vaultSearchIndex?.dispose();
 		this.speech.destroy();
 		this.chatBubble.destroy();
 		uninstallDebugApi();
@@ -1308,7 +1330,10 @@ export default class ShimejiPlugin extends Plugin {
 				() => this.roomFolder(),
 				() => this.settings.vaultSearchExcludedPaths,
 			);
-		else this.vaultSearchIndex = undefined;
+		else {
+			void this.vaultSearchIndex?.dispose();
+			this.vaultSearchIndex = undefined;
+		}
 	}
 
 	/** ChatBubble's own `sendMessage` dependency — augments the persona's system prompt with the
